@@ -25,6 +25,12 @@ positions in this document — the entries are ordered by date, not by number.
 
 == Conventions
 
+=== What `RECORD` means in a title
+
+A title clause `RECORD` marks an entry as informational — provenance,
+migrated notes, documented design choices, or a verified absence. No verdict
+is expected, now or later; the entry is complete as written.
+
 === What `[F:fitted]` means
 
 A value tagged `[F:fitted]` in this project's source or docs was tuned
@@ -191,7 +197,7 @@ are history, not current measurements.
 '''
 
 [#item58]
-== 2026-08-03 — Three findings dropped by the comment-reduction pass without being moved anywhere: EG2 shape corroboration, a Branch B cadence data point, and the `rt_pow` worst-case check — item58
+== 2026-08-03 — Three findings dropped by the comment-reduction pass without being moved anywhere: EG2 shape corroboration, a Branch B cadence data point, and the `rt_pow` worst-case check — item58 — RECORD 2026-08-13 (recovered provenance; the Branch B point stays OPEN)
 
 Recovered verbatim from source comments that were compacted or removed during
 the comment-reduction pass, before this document existed to hold them. None
@@ -557,7 +563,7 @@ numbers.
 '''
 
 [#item52]
-== 2026-08-03 — Pitch-bend ramp: companion mechanism findings (LSB precision, LFO/EG2 exclusion, instant re-aim) — item52, addendum to xref:#entry17[entry 17]
+== 2026-08-03 — Pitch-bend ramp: companion mechanism findings (LSB precision, LFO/EG2 exclusion, instant re-aim) — item52, addendum to xref:#entry17[entry 17] — RECORD 2026-08-13 (provenance addendum)
 
 **Status: mechanism `[A]`/`[M]`, not itself a fitted value.** Three small
 `src/engine/render.c`/`src/engine/voice.c` comment blocks migrated together
@@ -604,7 +610,7 @@ notice later.
 '''
 
 [#item53]
-== 2026-08-03 — `dls.c`: internal-mechanism deviations from `SPEC.adoc`'s parse model (never observably different for gm.dls) — item53
+== 2026-08-03 — `dls.c`: internal-mechanism deviations from `SPEC.adoc`'s parse model (never observably different for gm.dls) — item53 — RECORD 2026-08-13 (documented deviation)
 
 **Status: `[I]`/`[O]`, no observable-output deviation for gm.dls.** Four
 `src/engine/dls.c` comment blocks grouped: all describe places where this
@@ -657,7 +663,7 @@ xref:SPEC.adoc#s3-1-3[S3.1.3]'s three-tier fallback.
 '''
 
 [#item54]
-== 2026-08-03 — `voice.c`: small migrated notes (reserve-tier tagging, cents-clamp rationale, `DECAY_RATE_MULT` removal, `exp_coef_scaled` re-verification, mixer priming) — item54
+== 2026-08-03 — `voice.c`: small migrated notes (reserve-tier tagging, cents-clamp rationale, `DECAY_RATE_MULT` removal, `exp_coef_scaled` re-verification, mixer priming) — item54 — RECORD 2026-08-13 (migrated notes)
 
 **Status: mixed `[I]`/`[O]`/measurement addenda, grouped for size.** Five
 small `src/engine/voice.c` comment blocks with no natural larger home.
@@ -716,7 +722,7 @@ too quiet at 4 ms in.
 '''
 
 [#item55]
-== 2026-08-03 — `synth.c`/`synth.h`: small migrated notes (`SYNTH_SCHEDULE_LOCALE` A/B confound, bend-cents `sar` vs `/` and int64 bound, running-status) — item55
+== 2026-08-03 — `synth.c`/`synth.h`: small migrated notes (`SYNTH_SCHEDULE_LOCALE` A/B confound, bend-cents `sar` vs `/` and int64 bound, running-status) — item55 — RECORD 2026-08-13 (migrated notes)
 
 **Status: measurement-harness provenance / `[I]` rationale, not behavioral
 findings.** Three small `src/engine/synth.c`/`synth.h` comment blocks grouped
@@ -761,7 +767,7 @@ byte; running-status expansion, if any, is the caller's own responsibility.
 '''
 
 [#item56]
-== 2026-08-03 — `unit.c`: small migrated notes (golden-data provenance, Table D float32-vs-double, a citation mislabel in `synth.c`, one gm.dls data point) — item56
+== 2026-08-03 — `unit.c`: small migrated notes (golden-data provenance, Table D float32-vs-double, a citation mislabel in `synth.c`, one gm.dls data point) — item56 — RECORD 2026-08-13 (migrated notes)
 
 **Status: measurement-harness provenance / a documentation-accuracy note,
 not behavioral findings.** Four small `src/unit.c` comment blocks grouped
@@ -816,7 +822,7 @@ file order between the two connections doesn't matter for this data point.
 '''
 
 [#item57]
-== 2026-08-03 — `render.c`: probe 44's four short-release patches imply a 24-28 ms segment length (addendum to xref:#item21[item 21]/xref:#item21-resolved[item 21-resolved])
+== 2026-08-03 — `render.c`: probe 44's four short-release patches imply a 24-28 ms segment length (addendum to xref:#item21[item 21]/xref:#item21-resolved[item 21-resolved]) — RECORD 2026-08-13 (data point for the item21 family)
 
 **Status: `[M]` addendum, does not resolve the existing disagreement.**
 `GAIN_SEGMENT_FRAMES` already has a "direct measurement (~512 frames) vs.
@@ -2221,7 +2227,7 @@ queued release event, not of the raw byte) — checked and left unchanged.
 '''
 
 [#item40]
-== 2026-07-30 — Probe 50's reference is recorded: the per-voice ceiling is confirmed in the real synth, slopgs's flat top sits 1.61 dB high, and its sub-knee levels sit 1.35–2.96 dB low — item40
+== 2026-07-30 — Probe 50's reference is recorded: the per-voice ceiling is confirmed in the real synth, slopgs's flat top sits 1.61 dB high, and its sub-knee levels sit 1.35–2.96 dB low — item40 — DATA 2026-08-13 for item35 (OPEN)
 
 `artifacts/probe-results/50.flac` now exists (44.1 kHz stereo, 53.79 s,
 resampled to 22050 Hz mono for analysis; global lag −339.2 ms, envelope
@@ -2314,7 +2320,7 @@ with the level error bracketed on both sides of the knee.
 '''
 
 [#item39]
-== 2026-07-30 — The `HueArme-Weekend` clap note-on is confirmed present at 77.5482 s; the mid-note expression collapse is measured and rejected as the cause of its level excess — item39
+== 2026-07-30 — The `HueArme-Weekend` clap note-on is confirmed present at 77.5482 s; the mid-note expression collapse is measured and rejected as the cause of its level excess — item39 — DATA 2026-08-13 for item35 (OPEN)
 
 Three loose ends closed by direct measurement: the clap's note-on is located
 in the file, the mid-note expression collapse is eliminated as the cause of
@@ -4056,7 +4062,7 @@ same `0x198b6` call on `voice+0x38`. Not implemented.
 '''
 
 [#item29]
-== 2026-07-29 — `voice+0x104` is the DEVICE object, not the articulation block; `0x19834`'s clamp argument is the sample rate and its segment durations are in samples — `[A:0x12b3e]`,`[A:0x12fea]`
+== 2026-07-29 — `voice+0x104` is the DEVICE object, not the articulation block; `0x19834`'s clamp argument is the sample rate and its segment durations are in samples — `[A:0x12b3e]`,`[A:0x12fea]` — LANDED 2026-08-13 in SPEC S5.12
 
 Three statements in `SPEC.adoc` follow from a single mis-identification.
 
@@ -4098,7 +4104,7 @@ measurement to redo, not as a conflict in the disassembly.
 '''
 
 [#item30]
-== 2026-07-29 — `0x19aa4`'s cheap/full path test is inverted in S5.6's pseudocode — `[A:0x19aaf]`
+== 2026-07-29 — `0x19aa4`'s cheap/full path test is inverted in S5.6's pseudocode — `[A:0x19aaf]` — LANDED 2026-08-13 in SPEC S5.6 (since rewritten)
 
 xref:SPEC.adoc#s5-6[S5.6] renders `ScheduleFastRelease` as taking the cheap
 path (reapply the existing target through the clamped configurator) when
@@ -4671,7 +4677,7 @@ re-recording for it.
 '''
 
 [#item21-addendum-disasm]
-== 2026-07-28 — Item 21 addendum 2026-07-28: disassembly of the release path -- the ramp is a fixed RATE `[A:0x197dc]`, note-off is scheduled sample-accurately `[A:0x16cac]`, and the earliness is NOT the event drain
+== 2026-07-28 — Item 21 addendum 2026-07-28: disassembly of the release path -- the ramp is a fixed RATE `[A:0x197dc]`, note-off is scheduled sample-accurately `[A:0x16cac]`, and the earliness is NOT the event drain — absorbed 2026-08-13 by item21-resolved; findings stand
 
 Read against `artifacts/swmidi.sys` (PE32, image base `0x10000`, so SPEC.adoc's
 addresses are VAs directly). Four things the audio could not separate:
@@ -5350,7 +5356,7 @@ corpus mean from -28.85 dB to -28.18 dB. `make test` must keep printing
 '''
 
 [#spec-gaps-md-audit-2026-07-25-three-of-our-largest]
-== 2026-07-26 — AUDIT 2026-07-25: three of our largest remaining defects are DOCUMENTED mechanisms we did not implement, not unknowns
+== 2026-07-26 — AUDIT 2026-07-25: three of our largest remaining defects are DOCUMENTED mechanisms we did not implement, not unknowns — HISTORICAL 2026-08-13 per its own updates: #7 RESOLVED, #19/#14 partly built, remainders measured-and-rejected
 
 Prompted by discovering that #19's ramp machinery is `[A]` in SPEC.adoc when this
 file had called it `[O]`, every entry was re-checked against the spec. Three
@@ -5434,7 +5440,7 @@ against ``gm.dls``'s own bytes rather than guessed.
 '''
 
 [#item1]
-== 2026-07-26 — The public ABI has no way to inject a SysEx message
+== 2026-07-26 — The public ABI has no way to inject a SysEx message — OPEN 2026-08-13: fixed-ABI limit (S1.5.3); SysEx reachable only via SMF playback
 
 **Path:** `SPEC.adoc` xref:SPEC.adoc#part1[Part 1] xref:SPEC.adoc#s1-5-3[S1.5.3] (the fixed ABI) vs. xref:SPEC.adoc#part4[Part 4] (SysEx: GM
 Reset, GS Reset, Master Volume, RCV CHANNEL, USE RHYTHM PART, tuning grid).
@@ -5457,7 +5463,7 @@ signature (which the assignment says not to do).
 '''
 
 [#item2]
-== 2026-07-26 — Section 2.9.2 ("Wave-object fields") contradicts Section 3.2's own model
+== 2026-07-26 — Section 2.9.2 ("Wave-object fields") contradicts Section 3.2's own model — SPEC since corrected 2026-08-13: the S2.9.2 header now excludes the articulation block
 
 **Path:** `SPEC.adoc` xref:SPEC.adoc#s2-9-2[S2.9.2] vs. xref:SPEC.adoc#s3-2[S3.2]/xref:SPEC.adoc#s2-5[S2.5].
 
@@ -5478,7 +5484,7 @@ one merged struct and get this wrong.
 '''
 
 [#item3]
-== 2026-07-26 — Section 2.5 calls the velocity-depth sentinel "disabled"; the S3.5 formula says it means "full effect"
+== 2026-07-26 — Section 2.5 calls the velocity-depth sentinel "disabled"; the S3.5 formula says it means "full effect" — SPEC since corrected 2026-08-13: the "disabled" wording is gone, S3.5 states full effect for -9600
 
 **Path:** `SPEC.adoc` xref:SPEC.adoc#s2-5[S2.5] ("default velocity->attenuation curve is disabled")
 vs. xref:SPEC.adoc#s3-5[S3.5]'s own formula `scaled = (velAtten * depth) / -9600` with the stated
@@ -5559,7 +5565,7 @@ Item 38.
 '''
 
 [#item5]
-== 2026-07-26 — Section 3.3.5's own pseudocode and its own prose disagree about which
+== 2026-07-26 — Section 3.3.5's own pseudocode and its own prose disagree about which — SPEC since reconciled 2026-08-13: S3.3.5 equates the two offset conventions inline
 
    offset convention `region[N]` uses
 
@@ -5583,7 +5589,7 @@ presumably trying to describe.
 '''
 
 [#item6]
-== 2026-07-26 — ``smf.c``'s design is unconstrained by SPEC.adoc (by its own S1.5.4 statement) -- documented design choices
+== 2026-07-26 — ``smf.c``'s design is unconstrained by SPEC.adoc (by its own S1.5.4 statement) -- documented design choices — RECORD 2026-08-13 (design choices, unconstrained per S1.5.4)
 
 * Running-status expansion happens inside ``smf.c``'s SMF byte-stream walker,
   not inside `synth_midi`/`msgs_midi`. `msgs_midi` always requires an
@@ -5619,7 +5625,7 @@ xref:#entry14[entry 14]. S5.5's 47/33 off-by-one closed with the cadence fix
 '''
 
 [#item8]
-== 2026-07-26 — Envelope model: per-sample linear-attack / exponential-decay-and-release, not a reproduction of the original's own (unrecovered) update mechanism
+== 2026-07-26 — Envelope model: per-sample linear-attack / exponential-decay-and-release, not a reproduction of the original's own (unrecovered) update mechanism — OPEN 2026-08-13: the envelope-mechanism umbrella, S6.6 cadence still [O]
 
 **Path:** `SPEC.adoc` xref:SPEC.adoc#s3-4-2[S3.4.2], xref:SPEC.adoc#s6-6[S6.6] (both explicitly mark the original's own
 envelope/ramp update cadence and shape as `[O]` beyond "release is
@@ -5680,7 +5686,7 @@ point both values are computed.
 '''
 
 [#item10]
-== 2026-07-26 — LFO->pitch (vibrato) is now applied (`[M: probe 06]`, SPEC_LOG Entry 6); LFO->attenuation, real-time pitch-bend-to-EG2 routing, key-follow, and the GS per-part tuning grid remain parsed but not applied
+== 2026-07-26 — LFO->pitch (vibrato) is now applied (`[M: probe 06]`, SPEC_LOG Entry 6); LFO->attenuation, real-time pitch-bend-to-EG2 routing, key-follow, and the GS per-part tuning grid remain parsed but not applied — AMENDED 2026-08-13: EG2 CLOSED (item20), key-follow CLOSED (entry15/item27), LFO->attenuation NOT APPLICABLE (0 of 7,451 art1 blocks), GS grid still open (item36)
 
 **Update:** LFO->pitch (vibrato) -- previously the highest-effort item left
 out of this gap, and twice fitted-then-reverted (`SPEC_LOG` Entries 2/3) --
@@ -5775,7 +5781,7 @@ but not applied (xref:item10[§10] above).
 '''
 
 [#item12]
-== 2026-07-26 — Wave-level 8-bit PCM storage path deviates from "reference in place"
+== 2026-07-26 — Wave-level 8-bit PCM storage path deviates from "reference in place" — RECORD 2026-08-13 (unreachable for gm.dls: 495/495 16-bit PCM)
 
 **Path:** `SPEC.adoc` xref:SPEC.adoc#s1-5-5[S1.5.5] ("sample data is referenced, not copied").
 
@@ -5791,7 +5797,7 @@ are real but structurally unreachable for this specific sample collection.
 '''
 
 [#item13]
-== 2026-07-26 — Numeric tables built but not wired into the signal path
+== 2026-07-26 — Numeric tables built but not wired into the signal path — RECORD 2026-08-13 (the unwired tables' consumers are themselves [O] in SPEC)
 
 `tables.c` builds all five runtime tables SPEC.adoc's Appendix T documents
 (T1 dB->linear-amplitude, T2 cents, T3 semitone, the 201-entry envelope/
@@ -5843,7 +5849,7 @@ git history.
 '''
 
 [#spec-gaps-md-verified-absent-risk-not-a-gap-gain-law]
-== 2026-07-26 — Verified-absent risk, not a gap: gain law double-counting (fixed during implementation, not shipped)
+== 2026-07-26 — Verified-absent risk, not a gap: gain law double-counting (fixed during implementation, not shipped) — RECORD 2026-08-13 (verified absent, not a gap)
 
 An earlier draft of `voice.c` summed *both* the region's own wsmp
 attenuation and the wave object's own wsmp attenuation into the gain
@@ -6010,7 +6016,7 @@ truncation and it did not resolve the larger discrepancy. Same probe as #16
 '''
 
 [#item18]
-== 2026-07-26 — Expression (CC11) behaviour under fast gating is unmeasured, and the reference does something our smoothing model cannot produce
+== 2026-07-26 — Expression (CC11) behaviour under fast gating is unmeasured, and the reference does something our smoothing model cannot produce — OPEN 2026-08-13; item39's measurement is related but non-covering
 
 **Path:** `SPEC_LOG` xref:#entry4[Entry 4] (`GAIN_SMOOTH_ALPHA`, `[F:fitted]`) vs.
 `SPEC.adoc` xref:SPEC.adoc#s6-6[S6.6] (ramp/envelope update cadence, `[O]`).
