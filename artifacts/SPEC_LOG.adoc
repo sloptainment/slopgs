@@ -5607,144 +5607,14 @@ presumably trying to describe.
 [#item7]
 == 2026-07-26 — Voice pool: single flat 54-voice pool instead of the 48-primary + 6-reserve two-tier design — RESOLVED 2026-08-13: two-tier pool SHIPPED per the in-entry 2026-07-26 amendment; cadence fit in entry14
 
-[quote]
-____
-**RESOLVED 2026-07-26.** Implemented the 48-primary + 6-reserve two-tier
-pool this entry originally described as skipped. `src/engine/voice.c` now
-splits the existing 54-voice array (`NUM_VOICES`, unchanged) into
-`NUM_PRIMARY`/`NUM_RESERVE` via `TOPUP_RESERVE_COUNT` (default 6), adds
-`voice_topup_reserve()` with Branch A (retag already-free primary voices
-into reserve) and Branch B (only when primary is ALSO empty: fast-release
-up to `NUM_RESERVE` active voices via the existing `start_release(v, 1)`
-path -- the same fast-release call already used by exclusive-key-group
-choke and same-note retrigger, no second release mechanism added), and
-splits SPEC.adoc xref:SPEC.adoc#s5-7[S5.7]'s two steal comparators back apart:
-`find_steal_candidate_symmetric` (used only by top-up's own Branch B,
-gated on `fast_release_committed`) and `find_steal_candidate_asymmetric`
-(used only by note-on's forced-steal fallback, deliberately NOT gated, so
-an all-voices-committed state can never dead-end note-on -- checked with a
-targeted test that forces exactly that state).
-
-**What is fitted, not recovered:** the top-up CADENCE. SPEC.adoc xref:SPEC.adoc#s5-4[S5.4] states
-`TopUpReserve` (`0x12b6a`) runs "exactly once per call to the event
-dispatcher `0x12bd6` ... before any queued event in that call's batch is
-processed," whose only caller is the per-tick service routine `0x13054`.
-This project has no recovered true tick, so the cadence is `[O]` and was
-fit against the corpus -- two cadences were tried and measured via
-spectral-residual analysis (`compare_spectral_22050.overall_db` on
-32 graded probes, post-release-floor baseline mean -9.7693):
-
-* Hooked to ``render.c``'s existing 64-frame (~2.9 ms) `LFO_UPDATE_FRAMES`
-  sub-chunk: fired Branch B roughly an order of magnitude too often and
-  REGRESSED exactly the probes it targets -- `21_steal_policy` -7.797 ->
-  -6.292 (+1.505 worse), `10_polyphony` -4.576 -> -3.627 (+0.950 worse),
-  `20_voice_count` -7.120 -> -6.787 (+0.333 worse), mean -9.7693 ->
-  -9.6822. Corroborated by the defect metric overshooting: broadband
-  hard-cut click count fell to 6 against the reference's 54 -- i.e. this
-  cadence faded voices the reference leaves sounding.
-* Hooked once per `render_frames()` call (the nearest analogue to a
-  dispatcher batch, since `smf.c` drains a batch of due events then calls
-  `render_frames` once for the gap to the next event) -- shipped:
-  `21_steal_policy` -7.797 -> **-9.031** (-1.234 better), `20_voice_count`
-  -7.120 -> -7.946 (-0.826 better), `10_polyphony` -4.576 -> -4.716
-  (-0.139 better), mean -9.7693 -> **-9.8380**, no probe regressed. Click
-  count 44 against the reference's 54; settle-time ratio ours/reference
-  1.85 -> 1.16.
-
-`TOPUP_PER_SUBCHUNK` (default 0) retains the rejected cadence as a
-compile-time A/B switch; `-DTOPUP_RESERVE_COUNT=0` reproduces the
-pre-feature behaviour byte-identically on probe 21. Full fit details,
-including the reserve-size rationale and the deadlock-safety check, are in
-`SPEC_LOG` xref:#entry11[Entry 11].
-
-**Remaining discrepancy, not papered over:** against SPEC.adoc xref:SPEC.adoc#s5-5[S5.5]'s own
-`[M]` figure (80 simultaneous note-ons should leave 48 sounding and cut
-32), this build measures 47 surviving / 33 cut -- off by one, unchanged by
-the cadence fix. Recorded as open.
-
-'''
-
-**CADENCE CORRECTED 2026-07-26 (later the same day), after a listener
-reported voices cutting out in `field/HueArme-Weekend.mid` around 23 s.**
-Both cadences A/B'd above were wrong in the same way, and the probe corpus
-could not see it: **both were tied to render.c's call structure, not to
-wall-clock time.** `smf.c` splits a `render_frames()` call at *every*
-dispatched MIDI event, so "once per `render_frames()` call" runs at MIDI
-**event density**, not at a fixed period. Instrumented on
-HueArme-Weekend: ~800 top-up calls/second at t=23 s (the probes, whose
-events are 100 ms apart, run it ~10/second -- which is why they never
-exposed it).
-
-That is fatal because Branch B is a feedback loop. A marked voice keeps
-rendering for its full ~70 ms fast release before it can be reaped and
-recycled, so any cadence faster than that drain time marks another 6
-voices before the previous batch has freed anything. Measured: Branch B
-fired **33 times in 100 ms** and the active-voice count reached **zero** --
-two total-silence dropouts (t=23.09-23.15 s and t=23.44-23.51 s) that the
-reference does not have.
-
-SPEC.adoc xref:SPEC.adoc#s5-5[S5.5]'s own `[M]` figure bounds the period from the other side and
-was the missed clue: 32 cut = 26 pigeonhole + **6**, i.e. Branch B
-contributes exactly ONE batch over an entire saturated 8-second run. That
-only holds if a top-up cannot fire again until the batch it marked has
-drained and been recycled -- so the real period is at least the ~70 ms
-fast-release time.
-
-Fixed by making the cadence a real tick clock: `voice_topup_tick(frames)`
-(voice.c) accumulates rendered frames and runs one top-up every
-`TOPUP_INTERVAL_FRAMES` (default 2048, ~92.9 ms @ 22050 Hz).
-`TOPUP_PER_SUBCHUNK` is deleted -- both of its cadences were the same
-mistake, so there is nothing left to A/B against.
-
-Measured with `artifacts/score.py` (CLI port of ``dist/compare.js``'s
-envelope-r and level-normalized spectral residual), 13-item field+tests
-corpus:
-
-[options="header"]
-|===
-| item | r before | r after | residual before | residual after
-| HueArme-Weekend | 0.602 | **0.772** | -17.38 | **-19.16**
-| CrystalOscillator | 0.779 | **0.862** | -23.68 | **-25.01**
-| Kot_and_A64-GENERAL_SERUM | 0.866 | 0.868 | -19.37 | -19.38
-| corpus MEAN | 0.780 | **0.800** | -20.37 | **-20.61**
-|===
-
-The other 10 items are bit-identical before and after -- they never
-saturate the pool, so the top-up's Branch B never fires in them at all.
-Invented digital silence (render at its own -60 dB where the reference is
-not) falls 880 ms -> 210 ms on HueArme-Weekend and 1580 ms -> 150 ms on
-CrystalOscillator; the remainder in both is lead-in/tail, not mid-song.
-Interval swept over 64/512/1024/2048/4096 frames: the spectral residual is
-flat above 512 frames (0.03 dB spread) and cannot pick a value, but the
-probe-20/21 survivor count can -- 64 frames leaves 1 voice, 512 leaves 43,
-1024 and above leave 48. Floor is therefore between 512 and 1024 frames
-(23-46 ms); 2048 sits above it. Full fit record in `SPEC_LOG` xref:#entry14[Entry 14].
-
-**The 47/33 residual recorded above is CLOSED by this fix:** probes
-`20_voice_count` and `21_steal_policy` now both settle at exactly **48
-surviving / 32 cut**, matching SPEC.adoc xref:SPEC.adoc#s5-5[S5.5]'s `[M]` figure. The off-by-one
-was the too-fast cadence marking one extra voice, not a pool-size error.
-
-The original entry follows as history.
-____
-
-**Path:** `SPEC.adoc` xref:SPEC.adoc#part5[Part 5] xref:SPEC.adoc#s5-2[S5.2]-xref:SPEC.adoc#s5-5[S5.5].
-
-Implemented: one pool of 54 voices (`NUM_VOICES` in `voice.h`), a linear
-scan for a free slot, and (only once all 54 are active) a steal of the best
-candidate by a single merged priority (prefer an already-released voice,
-then oldest allocation age, then lowest current envelope level). This
-reproduces the *behaviorally significant, audible* part of xref:SPEC.adoc#s5-7[S5.7] (oldest-
-first stealing under sustained overshoot) without the reserve top-up's
-once-per-dispatch-call transient-burst mechanic (xref:SPEC.adoc#s5-4[S5.4]/xref:SPEC.adoc#s5-5[S5.5]), which only
-changes the *exact number* of extra voices evicted during a brief transient
-when demand suddenly exceeds 54 -- not whether 54 voices are available or
-whether stealing is oldest-first. Also merged SPEC.adoc's two distinct
-steal-priority comparators (`0x12426` symmetric vs. `0x124a8` asymmetric,
-xref:SPEC.adoc#s5-7[S5.7]) into one comparator, since the asymmetry only matters when notes are
-actively being released while stealing is also happening -- a narrower case
-than the measured probes SPEC.adoc itself uses to validate oldest-first
-stealing.
+RESOLVED: the 48-primary + 6-reserve two-tier pool is implemented
+(`voice_topup_reserve` Branch A retag / Branch B fast-release, split steal
+comparators). Both originally A/B'd cadences were the same mistake — tied to
+``render.c``'s call structure they ran at MIDI event density, causing
+total-silence dropouts on HueArme-Weekend — fixed as a real tick clock,
+`TOPUP_INTERVAL_FRAMES` = 2048 (~92.9 ms); fit record in
+xref:#entry14[entry 14]. S5.5's 47/33 off-by-one closed with the cadence fix
+(exactly 48/32). Full history (both sweeps, score tables) is in git.
 
 '''
 
@@ -5962,75 +5832,13 @@ look-ahead-visibility behavior xref:SPEC.adoc#s4-7-3[S4.7.3] describes.
 [#item15]
 == 2026-07-26 — ``exp_coef``'s per-sample coefficient: retuned from a 1/e time constant to a "100dB-over-``seconds``" calibration -- SPEC.adoc leaves the exact number `[O]` — RESOLVED 2026-08-13 per the in-entry amendment (entry15 §4b); `DECAY_RATE_MULT` since removed (item54)
 
-[quote]
-____
-**The "~2.9x still too slow" residual below is RESOLVED 2026-07-26: it was
-decay-time key-follow.** This entry ruled `usSource=3` out on the strength
-of a `scale*(60-keynum)` reading, which is zero at note 60 and therefore
-could not explain a note-60 measurement. That reading was wrong: DLS-1
-normalizes the KEYNUMBER source as `key/128`, un-shifted, so Piano 1's own
-`-3979` contributes `-1865` timecents at note 60 -- 40.02s -> 13.63s, i.e.
-**7.34 dB/s against the 7.14 dB/s measured below**, from ``gm.dls``'s own
-data with no fudge factor. Shipped; see SPEC.adoc xref:SPEC.adoc#s2-4-3-2[S2.4.3.2] and xref:item10[item 10] above.
-The "100dB-over-``seconds``" calibration this entry describes is unchanged
-and still `[O]` as a *mechanism* -- key-follow supplies the *duration*, this
-supplies the *shape*, and the two were being conflated. Its *value* is no
-longer open: `probes/35_decay_keyfollow.mid` measures the reference decaying
-at 0.965x this project's rate, uniformly across 17 notes / 3 instruments /
-a 7x rate range (sd 0.005, no trend vs. key), so the decay segment is
-**96.5 dB over `seconds`**, shipped as `DECAY_RATE_MULT = 0.965`. Release
-keeps 100 dB -- probe 35 measures decay only and xref:SPEC.adoc#s5-6[S5.6]'s 70 ms fast-release
-still matches. See SPEC_LOG xref:#entry15[Entry 15] section 4b.
-____
-
-**Path:** `SPEC.adoc` xref:SPEC.adoc#s3-4-1[S3.4.1] (timecent->duration formula, confirmed `[A]`) vs.
-xref:SPEC.adoc#s3-4-2[S3.4.2] (release *shape* confirmed exponential, but exact per-sample
-consumption of the resulting duration explicitly marked `[O]`) vs. xref:SPEC.adoc#part5[Part 5]
-xref:SPEC.adoc#s5-6[S5.6] (a wholly separate, already-`[M]`-measured data point: fast/choke
-release reaches full silence in 70.0 ms, matching the 70ms rate-clamp
-constant directly -- not ~7.6x that, which is what an asymptotic-tau reading
-of "duration" would require to reach even a -66dB floor).
-
-Measured directly (own fresh measurement, this pass): rendering
-`probes/04_envelope.mid` (a single-note attack/decay/sustain/release sweep)
-against its reference capture `probe-results/04.flac`, a held note's
-release segment decays *linearly in dB* at a near-constant ~100 dB/s
-(R²=0.9994 log-linear fit over a 4s window) for a patch whose own
-timecent-derived release duration is 0.99s -- i.e. it reaches full silence
-right around that 0.99s mark, not after ~7.6 time constants of an
-asymptotic decay-to-zero (which the previous implementation computed,
-making release/decay ring ~11x-33x longer than the reference and leaving
-`corridor.mid` never latching `msgs_is_finished` within a 20s-slack render
-cap -- 82.8s actual vs. a 52.4s reference).
-
-**What I did:** changed `exp_coef(seconds)` in `voice.c` from a 1/e-time-
-constant model to a "decays 100dB over exactly `seconds` seconds" model
-(`c = 10^(-5/samples)`), applied uniformly to both EG1 decay and release
-(the same shared helper). This matches the xref:SPEC.adoc#s5-6[S5.6] fast-release measurement
-almost exactly and the probe-04 release measurement well. It does **not**
-fully explain the EG1 *decay*-segment rate for one measured case (Acoustic
-Grand Piano, sustain=0, note 60): predicted ~2.5 dB/s vs. measured ~7.14
-dB/s, roughly 2.9x still too slow. I looked for (and ruled out) an
-`usSource=3` (KEYNUMBER) key-scaling connection targeting EG1 decay as the
-explanation -- `gm.dls` does carry one for this exact instrument
-(confirmed directly against the file's raw bytes, matching SPEC.adoc xref:SPEC.adoc#s2-4-3[S2.4.3]'s
-own confirmed `usSource=3`/`0x0207` table), but its contribution is
-`scale*(60-keynum)`, which is exactly zero at note 60 (the only note
-probe 04 exercises), so it cannot be the cause of the residual 2.9x this
-measurement shows. The precise remaining discrepancy is unresolved; the
-real consumption code (SPEC.adoc xref:SPEC.adoc#part5[Part 5] `+0x13c`/`0x194da`/`0x19644`) lives
-outside every PAGE range this project examined and is marked `[O]`.
-Measured net effect (spectral-residual graded-probe mean): -2.64dB ->
--3.08dB; `field/corridor.mid` render duration: 82.8s (truncated, never finished)
--> 52.57s (finishes, vs. a 52.43s reference). Kept.
-
-I also tried replacing the release-segment finish threshold (`env_level <
-0.0005`, an arbitrary -66dB) with SPEC.adoc xref:SPEC.adoc#part5[Part 5]'s own confirmed
-finish-detection floor constant (`0xffffe0c0` = -8000 hundredths-dB =
--80dB, `[A:0x19733]`). Measured: byte-identical `spec_ovr` on every graded
-probe, and a very slightly worse (further from reference) `corridor.mid`
-duration (53.13s vs. 52.57s against a 52.43s reference). Reverted --
-no measured benefit.
+The retune itself (the 100 dB-over-``seconds`` shape) shipped; the "~2.9x
+still too slow" residual was decay-time key-follow supplied by ``gm.dls``'s
+own data (see SPEC.adoc xref:SPEC.adoc#s2-4-3-2[S2.4.3.2] and
+xref:#entry15[entry 15] section 4b). The 0.965 rate multiplier probe 35
+measured shipped as `DECAY_RATE_MULT` and was later removed with the
+geometric-ramp decay (xref:#item54[item 54]). Full measurement record is in
+git history.
 
 '''
 
@@ -6606,109 +6414,27 @@ ____
 [#item20-original]
 == 2026-07-26 — EG2 (the pitch envelope) is parsed and then discarded -- `[A]` in SPEC.adoc, never applied — SUPERSEDED 2026-08-13 by item58: item20 already ships linear-in-cents segments
 
-**Path:** `SPEC.adoc` xref:SPEC.adoc#s2-4-3[§2.4.3] "Source = 5 (EG2)" vs. `src/engine/voice.c`
-`voice_update_pitch`.
-
-SPEC.adoc documents the connection as recovered from disassembly:
-
-[options="header"]
-|===
-| usSource | usDestination | action | VMA
-| 5 (EG2) | 0x0003 (PITCH) | high word of `lScale` -> WORD wave+0x1e | `[A:0x15838]`
-|===
-
-xref:SPEC.adoc#s2-4-4[§2.4.4] confirms the dispatch is real and specific: `usSource==5` to any
-destination *other* than PITCH is ignored, so PITCH is the one EG2 modulation
-this driver implements -- and it does implement it.
-
-`src/engine/dls.h` parses it correctly into `Artic.eg2_to_pitch_cents`, alongside
-`eg2_attack_tc` / `eg2_decay_tc` / `eg2_sustain_permille` / `eg2_release_tc`.
-``voice.c``'s `voice_update_pitch` then sums:
-
-[source,c]
-----
-int32_t mod_cents = synth_pitch_bend_cents(v->channel)
-                  + voice_lfo_cents(v)
-                  + 0 /* + EG2 (step 3) */;
-----
-
-The EG2 term is a literal zero. **Every pitch envelope in `gm.dls` is silently
-dropped.**
+Banks 2/3/8 of program 125 sounded flat because the parsed EG2->PITCH
+connection was summed as a literal zero; the bank-by-bank correlation against
+``gm.dls``'s own connection data was exact. Superseded: xref:#item20[item 20]
+ships linear-in-cents EG2 segments, and the shape corroboration lives in
+xref:#item58[item 58]. Full body (probe-34 method, correlation table,
+implementer notes) is in git history.
 
 [#item20-original-how-it-was-found]
 === How it was found
 
-Found by ear on real content, then localised with a purpose-built probe: the
-user reported that our render of a hand-cut excerpt (first 14 s of bank 2
-program 125, `Car-Stop`) sounded higher-pitched than the reference. Automatic
-pitch metrics on that noise-like, loop-based SFX were worthless -- three
-separate measurements gave "+8 semitones", "patch-specific centroid offsets",
-and "exact match", each retracted; it has no stable fundamental to track, and
-one metric was silently pinned at the bottom of its own search range.
-
-`probes/34_sfx_bank_identity.mid` settled it by sweeping program 125 across all
-ten banks it exists in, then comparing spectrograms rather than scalars. The
-reference shows a clear **curved pitch glide** on banks 2, 3 and 8; ours shows a
-**flat horizontal line**. The glide is the missing EG2.
-
 [#item20-original-the-correlation-is-exact]
 === The correlation is exact
-
-[options="header"]
-|===
-| bank | patch | EG2->PITCH | EG2 attack/decay tc | probe 34
-| 2 | Car-Stop | **-1000 ct** | -8722 / -677 | **glide missing**
-| 3 | Car-Pass | **+530 ct** | -- / -503 | **glide missing**
-| 8 | Starship | **-268 ct** | -- / +1868 | **glide missing**
-| 5 | Siren | +94 ct | -32768 / -32768 (sentinel) | matches
-| 9 | Burst Noise | +1200 ct | -32768 / -32768 (sentinel) | matches
-| 7 | Jetplane | +1200 ct | +5271 (~21 s attack) | matches
-| 0, 1, 4, 6 | Helicopter, Car-Engine, Car-Crash, Train | none | -- | matches
-|===
-
-Every patch that differs has an EG2->PITCH connection with a real,
-non-sentinel envelope time. Every patch with a sentinel time (instant, so no
-audible glide) or no connection at all matches. Bank 7's attack is ~21 s, so a
-2 s probe note moves only a fraction of its 1200 cents -- consistent with it
-appearing to match at this note length.
 
 [#item20-original-why-this-matters-beyond-sfx]
 === Why this matters beyond SFX
 
-The affected patches here are sound effects, but the mechanism is general: any
-`gm.dls` instrument authoring an EG2->PITCH connection gets a pitch envelope
-we do not render. A corpus-wide count of `(usSource=5, usDestination=0x0003)`
-connections should be run before estimating the blast radius -- this entry does
-not claim it is confined to program 125.
-
 [#item20-original-what-an-implementer-needs]
 === What an implementer needs
 
-* Depth: `Artic.eg2_to_pitch_cents`, already parsed (high word of `lScale`,
-  per `[A:0x15838]`).
-* Envelope: `eg2_attack_tc` / `eg2_decay_tc` / `eg2_sustain_permille` /
-  `eg2_release_tc`, already parsed, with the same timecent->duration
-  conversion EG1 uses (xref:SPEC.adoc#s3-4-1[§3.4.1], confirmed `[A]`).
-* Application point: the `+ 0` slot in `voice_update_pitch`, which already
-  runs per sub-chunk, so an EG2 value updated on the same cadence as the LFO
-  will land correctly.
-* **Caution:** SPEC.adoc xref:SPEC.adoc#s6-6[S6.6] warns the envelope generator's own update cadence
-  is `[O]` and must not be inferred from the mixer's `ramp_period`. Treat the
-  EG2 update rate as a free parameter, and note that SPEC_LOG item 8 (our
-  envelope model) is still open -- an EG2 built on the existing EG1 machinery
-  inherits whatever is wrong there.
-* Acceptance test: `probes/34_sfx_bank_identity.mid` / `probe-results/34.flac`,
-  section B. Banks 2, 3 and 8 must show a curved glide matching the reference;
-  banks 0, 1, 4, 5, 6, 7, 9 must not change.
-
 [#item20-original-method-note]
 === Method note
-
-The scalar metrics actively misled here, three times running. What worked was
-(a) sweeping a controlled probe across every candidate rather than comparing
-two, (b) looking at a spectrogram instead of computing a number, and (c)
-checking the finding against ``gm.dls``'s own connection data, which turned a
-visual impression into an exact correlation.
 
 '''
 
