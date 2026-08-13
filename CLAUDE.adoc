@@ -85,6 +85,23 @@ read the binary. Unlike `SPEC.adoc`, this file may also show measurement
 output — profiles, per-item score tables, A/B builds — since that is exactly
 the provenance it exists to hold. Prefer a table to a code block for those.
 
+[IMPORTANT]
+--
+**Read protocol for both files.** Neither is ever read whole. `SPEC.adoc` is
+~6,400 lines and `SPEC_LOG.adoc` ~9,000; the Read tool returns 2,000 lines by
+default and gives no warning that the rest exists, which is what produces
+read-then-`head`-hunt flailing.
+
+* The entry point is `grep -n '^=\+ ' artifacts/SPEC.adoc` (192 headings) or
+  `grep -n '^== ' artifacts/SPEC_LOG.adoc` (82 entry titles, each effectively
+  an abstract), then Read with `offset`/`limit` on the hit.
+* Every heading in `SPEC.adoc` carries an anchor (`[#s3-6]`, `[#o16]`), so
+  `grep -n '\[#s3-6\]'` jumps straight to a section cited from anywhere else.
+* The LOG is grepped, not read. Look up an id with `grep -n '\[#item49\]'`.
+* The `.pdf` siblings are for humans. Never Read them — they are 4.8 MB /
+  2.9 MB and PDF reads cap at 20 pages.
+--
+
 [NOTE]
 --
 This applies when a *behavioral finding changes* — a claim in `SPEC.adoc` is
