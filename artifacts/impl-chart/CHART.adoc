@@ -391,9 +391,10 @@ controllers back to defaults. Bank/Program survive.
 | Scale Tuning
 
 One signed offset per semitone class (C…B), centred on `40`, stored per Part `n`
-| Recognized. This single address carries all twelve semitone offsets as
-its twelve data bytes, always starting at semitone class C. No other
-address in `41`–`4B` is recognized.
+| Recognized but **not applied — no audible retune**. This single address
+carries all twelve semitone offsets as its twelve data bytes, always starting
+at semitone class C; they are parsed and discarded. No other address in
+`41`–`4B` is recognized.
 | `40 1n` _any other_
 | Anything else in Roland's Patch-parameter address space for Part `n` (Reverb/Chorus Macro, Part Level, Pan, Pitch Key Shift, Velocity Sense, …)
 | **Not individually implemented.**
@@ -771,8 +772,8 @@ voice** — not at 54 — freeing voices faster than a plain steal-oldest policy
 would.
 
 A voice cut this way, or cut by a drum kit's exclusive-key group,
-reaches silence within 14 ms of the cut however long its patch's own release
-is; it fades, never clicks off.
+reaches silence within 14.29 ms of the cut however long its patch's own
+release is; it fades, never clicks off.
 
 [#quirks-envelopes]
 === Envelopes
