@@ -7,6 +7,10 @@
 
 DlsCollection g_dls;
 
+/* Sticky malformed-chunk HRESULT (S2.2.2 error table); negative as int32, so
+ * dls_load returns it directly. Any nonzero value aborts the whole load. */
+static int32_t parse_err;
+
 static uint32_t rd_u32(const uint8_t *p)
 {
     return (uint32_t) p[0] | ((uint32_t) p[1] << 8) | ((uint32_t) p[2] << 16) |
@@ -70,7 +74,13 @@ static void parse_wave_contents(const uint8_t *content, uint32_t clen, Wave *w)
                 uint16_t nchan = rd_u16(cdata + 2);
                 uint32_t rate = rd_u32(cdata + 4);
                 uint16_t bps = rd_u16(cdata + 0xe);
-                if (fmt_tag == 1 && nchan == 1)
+                if (have_fmt)
+                    parse_err = (int32_t) 0x80041389; /* duplicate fmt, D-27 */
+                else if (fmt_tag != 1)
+                    parse_err = (int32_t) 0x8004138a; /* not PCM, D-26 */
+                else if (nchan != 1)
+                    parse_err = (int32_t) 0x8004138b; /* not mono, D-26 */
+                else
                 {
                     w->sample_rate = rate;
                     bits_per_sample = bps;
@@ -80,7 +90,9 @@ static void parse_wave_contents(const uint8_t *content, uint32_t clen, Wave *w)
         }
         else if (fourcc_is(p, 'd', 'a', 't', 'a'))
         {
-            if (have_fmt)
+            if (!have_fmt)
+                parse_err = (int32_t) 0x80041389; /* data before fmt, D-27 */
+            else
             {
                 if (bits_per_sample == 16)
                 {
@@ -116,7 +128,9 @@ static void parse_wave_contents(const uint8_t *content, uint32_t clen, Wave *w)
                 w->attenuation_hdb =
                     (int16_t)((int32_t)(((int64_t) latten * 10) >> 16));
                 uint32_t nloops = rd_u32(cdata + 0x10);
-                if (nloops == 0)
+                if (nloops > 1)
+                    parse_err = (int32_t) 0x80041389; /* S2.2.2, D-21 */
+                else if (nloops == 0)
                 {
                     w->no_loop = 1;
                 }
@@ -180,9 +194,13 @@ static void apply_art1(const uint8_t *cdata, uint32_t csize, Artic *a)
         return;
     uint32_t cb_size = rd_u32(cdata + 0);
     uint32_t n_blocks = rd_u32(cdata + 4);
+    if (cb_size < 8)
+    {
+        parse_err = (int32_t) 0x8004138c; /* S2.2.2, D-23 */
+        return;
+    }
     /* SPEC.adoc S2.3.6: array unconditionally at chunk_data+8, ignoring the
-     * chunk's own declared cbSize. */
-    (void) cb_size;
+     * chunk's own declared cbSize beyond the >=8 gate. */
     const uint8_t *block = cdata + 8;
     for (uint32_t i = 0; i < n_blocks; i++)
     {
@@ -347,6 +365,8 @@ static Region *parse_region(const uint8_t *content, uint32_t clen)
                 r->high_key = cdata[2];
                 r->key_group = cdata[0xa];
             }
+            else
+                parse_err = (int32_t) 0x8004138d; /* S2.2.2, D-23 */
         }
         else if (fourcc_is(p, 'w', 's', 'm', 'p'))
         {
@@ -385,6 +405,8 @@ static Region *parse_region(const uint8_t *content, uint32_t clen)
                 {
                     r->wave_pool_index = rd_u16(cdata + 8);
                 }
+                else
+                    parse_err = (int32_t) 0x8004138b; /* S2.2.2, D-23 */
             }
         }
         else if (fourcc_is(p, 'L', 'I', 'S', 'T'))
@@ -448,6 +470,8 @@ static Instrument *parse_instrument(const uint8_t *content, uint32_t clen)
                     locale |= 0x80000000u;
                 inst->locale = locale;
             }
+            else
+                parse_err = (int32_t) 0x8004138f; /* S2.2.2, D-23 */
         }
         else if (fourcc_is(p, 'L', 'I', 'S', 'T'))
         {
@@ -519,6 +543,7 @@ int dls_load(const uint8_t *data, uint32_t len)
     g_dls.wave_array = 0;
     g_dls.wave_count = 0;
     g_dls.valid = 0;
+    parse_err = 0;
 
     if (len < 12)
         return -1;
@@ -598,10 +623,19 @@ int dls_load(const uint8_t *data, uint32_t len)
             }
             /* INFO and any other LIST subtype: skipped. */
         }
-        /* colh, vers, msyn, edit: parsed off, size-validated leniently --
-         * SPEC_LOG item53 */
+        else if (fourcc_is(p, 'c', 'o', 'l', 'h'))
+        {
+            if (size < 4)
+                parse_err = (int32_t) 0x80041392; /* S2.2.2, D-23 */
+        }
+        /* vers, msyn, edit: parsed off, size-validated leniently -- SPEC_LOG
+         * item53 */
         p = cdata + size;
     }
+
+    /* S2.2.2: any malformed chunk aborts the whole load. */
+    if (parse_err)
+        return (int) parse_err;
 
     /* Post-pass mirrors SPEC.adoc S2.8.4's own post-pass (0x15dde); see file
      * header for the mechanism deviation. */
@@ -631,6 +665,8 @@ int dls_load(const uint8_t *data, uint32_t len)
             }
             arr[i] = w;
         }
+        if (parse_err)
+            return (int) parse_err;
         g_dls.wave_array = arr;
         g_dls.wave_count = ptbl_cues;
 
