@@ -2406,7 +2406,7 @@ class of fix cannot work.
 '''
 
 [#item35-followup-probe50]
-== 2026-07-30 — Probe 50 (`50_gain_ceiling`) finalized to eight sections; attached to xref:#item35[Item 35], reference still not recorded
+== 2026-07-30 — Probe 50 (`50_gain_ceiling`) finalized to eight sections; attached to xref:#item35[Item 35], reference still not recorded — reference RECORDED 2026-08-13 by item40
 
 This is not a new discrepancy. It is a measurement instrument attached to
 the still-open xref:#item35[Item 35] (the `+1200` constant and the `[O]`
@@ -4582,7 +4582,7 @@ two-segment model from the data gathered this session alone.
 '''
 
 [#item21-addendum]
-== 2026-07-28 — Item 21 addendum 2026-07-27: the shape is SETTLED by `[M: probes 44/45]` -- it is a LINEAR ramp to zero, not a stretched exponential -- but implementing it alone REGRESSES the corpus, so the fitted floor stays
+== 2026-07-28 — Item 21 addendum 2026-07-27: the shape is SETTLED by `[M: probes 44/45]` -- it is a LINEAR ramp to zero, not a stretched exponential -- but implementing it alone REGRESSES the corpus, so the fitted floor stays — SUPERSEDED 2026-08-13 by item21-resolved: the "ramp" is segment quantisation and the floor was removed
 
 The original entry's "genuinely open" note guessed a delayed release onset
 from one hand-cut isolate. Probes 44, 45 and 46 were built to settle it and
@@ -4845,7 +4845,7 @@ moving the constant again.
 '''
 
 [#item21-reap]
-== 2026-07-28 — Item 21 addendum: `+0x13c` is the bare EG, not a gain-inclusive level -- `[A:0x194da]` corrects SPEC.adoc S5.7's `[I]`
+== 2026-07-28 — Item 21 addendum: `+0x13c` is the bare EG, not a gain-inclusive level -- `[A:0x194da]` corrects SPEC.adoc S5.7's `[I]` — remaining step SHIPPED and its cadence claim RETRACTED 2026-08-13 by item21-resolved-2
 
 Found while diagnosing a total-dropout regression the per-segment gain work
 exposed. `0x19490` evaluates the amplitude EG at `0x194aa`, stores it to
@@ -5605,7 +5605,7 @@ presumably trying to describe.
 '''
 
 [#item7]
-== 2026-07-26 — Voice pool: single flat 54-voice pool instead of the 48-primary + 6-reserve two-tier design
+== 2026-07-26 — Voice pool: single flat 54-voice pool instead of the 48-primary + 6-reserve two-tier design — RESOLVED 2026-08-13: two-tier pool SHIPPED per the in-entry 2026-07-26 amendment; cadence fit in entry14
 
 [quote]
 ____
@@ -5872,7 +5872,7 @@ reference yet.
 '''
 
 [#item11]
-== 2026-07-26 — RCV CHANNEL "Part" indirection is not modeled
+== 2026-07-26 — RCV CHANNEL "Part" indirection is not modeled — CLOSED 2026-08-13 by item44
 
 **Path:** `SPEC.adoc` xref:SPEC.adoc#s4-2-2[S4.2.2]/xref:SPEC.adoc#s4-6-1[S4.6.1]/xref:SPEC.adoc#s4-8[S4.8]/xref:SPEC.adoc#t8[T.8] (the `USE RHYTHM PART`/`RCV
 CHANNEL` per-"Part" tables, with a channel<->Part remap layer, and the
@@ -5941,7 +5941,7 @@ driver are themselves marked `[O]`/unrecovered by SPEC.adoc itself (xref:SPEC.ad
 '''
 
 [#item14]
-== 2026-07-26 — Event scheduling: no timestamp-keyed pending-controller queues
+== 2026-07-26 — Event scheduling: no timestamp-keyed pending-controller queues — PARTIALLY CLOSED 2026-08-13: the S4.2.1 scheduled locale SHIPPED (item55); the S4.7 queues remain unmodeled
 
 **Path:** `SPEC.adoc` xref:SPEC.adoc#s4-2-1[S4.2.1]/xref:SPEC.adoc#s4-7[S4.7] (six per-controller scheduled queues with
 look-ahead promotion).
@@ -5960,7 +5960,7 @@ look-ahead-visibility behavior xref:SPEC.adoc#s4-7-3[S4.7.3] describes.
 '''
 
 [#item15]
-== 2026-07-26 — ``exp_coef``'s per-sample coefficient: retuned from a 1/e time constant to a "100dB-over-``seconds``" calibration -- SPEC.adoc leaves the exact number `[O]`
+== 2026-07-26 — ``exp_coef``'s per-sample coefficient: retuned from a 1/e time constant to a "100dB-over-``seconds``" calibration -- SPEC.adoc leaves the exact number `[O]` — RESOLVED 2026-08-13 per the in-entry amendment (entry15 §4b); `DECAY_RATE_MULT` since removed (item54)
 
 [quote]
 ____
@@ -6245,7 +6245,7 @@ is not recoverable from the spec either.
 '''
 
 [#item19]
-== 2026-07-26 — Control changes are RAMPED -- and SPEC.adoc S6.6 documents the mechanism as `[A]`; we simply never implemented it
+== 2026-07-26 — Control changes are RAMPED -- and SPEC.adoc S6.6 documents the mechanism as `[A]`; we simply never implemented it — RESOLVED 2026-08-13: pitch half via entry9 (in-entry amendment), gain half subsumed by item21-resolved
 
 [quote]
 ____
@@ -6604,7 +6604,7 @@ ____
 '''
 
 [#item20-original]
-== 2026-07-26 — EG2 (the pitch envelope) is parsed and then discarded -- `[A]` in SPEC.adoc, never applied
+== 2026-07-26 — EG2 (the pitch envelope) is parsed and then discarded -- `[A]` in SPEC.adoc, never applied — SUPERSEDED 2026-08-13 by item58: item20 already ships linear-in-cents segments
 
 **Path:** `SPEC.adoc` xref:SPEC.adoc#s2-4-3[§2.4.3] "Source = 5 (EG2)" vs. `src/engine/voice.c`
 `voice_update_pitch`.
