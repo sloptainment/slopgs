@@ -695,7 +695,7 @@ chunk except the ones inside an `INFO` list) with an odd declared size,
 immediately followed by another chunk, will desync a naive byte-accurate
 implementation of this driver by one byte relative to what the DLS-1 spec
 requires (spec mandates padding everywhere). This is invisible for `gm.dls`
-itself because (verified in xref:s2-7[§2.7]'s cross-check script) every chunk in the real
+itself because every chunk in the real
 file happens to be even-sized already.
 
 [#s2-2-2]
@@ -1042,11 +1042,11 @@ instruction-by-instruction.
    handled, sharing storage
    with 0x0208 and 0x030c respectively (reading the *high* word of `lScale`
    where the paired destination reads the *low* word).
-. **Real file data** (xref:s2-11[§2.11] cross-check script, run against `gm.dls`): dest
+. **Real file data**: dest
    `0x020a` occurs **203 times** across the 235 instruments' instrument-level
    `art1` blocks, of which **104 have a non-zero `lScale`**; dest `0x030e`
    occurs **223 times**, of which **4 have a non-zero `lScale`**
-   `[D:gm.dls]` (exact script output in xref:s2-11[§2.11]). These are not "always zero" —
+   `[D:gm.dls]`. These are not "always zero" —
    they materially affect the EG1/EG2 sustain-level fields in a large
    fraction of real instruments. (Their counts numerically match the
    companion destination 0x0208/0x030c counts exactly — 104-of-203 and
@@ -2075,7 +2075,7 @@ block; every other region in the same instrument adopts a shared reference to
 the instrument's own default block.** It resolves what would otherwise be a contradiction: in `gm.dls`, only
 535 of 1498 regions (35.7%) carry their own `lart` `[D:gm.dls]`, yet every
 region ends up with a non-null `+0x20` because 226 of 235 instruments carry
-an instrument-level `lart` to share `[D:gm.dls]` (both counts, script in xref:s3-11[§3.11]).
+an instrument-level `lart` to share `[D:gm.dls]`.
 
 **Consequence for note-on:** the note-trigger setup function (`0x19b54`,
 xref:s3-3[§3.3] below) reads `region->articulationBlock` (`region+0x20`) and, if it is
@@ -2121,8 +2121,7 @@ calls involved (two per table). `[A:0x1669b]` `[A:0x16709]` `[A:0x1675e]`,
 **The cents-ratio table's domain**, read directly off the loop bounds at
 `0x16700`/`0x16710` (loop counter initialized to `0xffffff9c` = −100; exit
 compare against `0x64` = 100), is **n = −100..100 (201 entries)**, not −48..48 — the semitone
-table is the one with the ±48 (±4-octave) domain. Both domains are asserted
-against the raw instruction bounds in the verification script below.
+table is the one with the ±48 (±4-octave) domain.
 
 Spot values: `T[0x1bfc0][−100] = 1294` (a round-to-nearest builder would give
 1295) and `T[0x1ad00][−100] = 3866`, both reproduced in xref:s3-7[§3.7].
@@ -2368,8 +2367,8 @@ number even though the runtime special-cases it to 0 rather than computing
 `pow`), evaluated both as seconds and as samples at 22050 Hz (1104
 evaluations), **7 land on an exact integer** and, among the remaining 1097,
 the **minimum distance to a truncation boundary is 1,367,824 ULP** (worst
-case `tc = 4330.571090698242` → `269009.99992038216` samples) `[D:gm.dls]`
-— script and full output in xref:s3-7[§3.7]; this reproduces the assignment's stated
+case `tc = 4330.571090698242` → `269009.99992038216` samples) `[D:gm.dls]`;
+this reproduces the assignment's stated
 figures exactly via an independent re-derivation. **Conclusion: plain
 IEEE-754 `binary64` `pow` suffices; no bit-exact MSVC `pow` implementation is
 required for correct truncated results on this file.**
@@ -5487,7 +5486,7 @@ conditional on facts that could change, not on the binary.
 [#s7-2]
 === The open-questions register
 
-Twenty distinct `[O]` items. Five are **behaviourally significant** —
+Nineteen distinct `[O]` items. Five are **behaviourally significant** —
 a wrong guess produces audibly different output. The rest are cosmetic: no
 output consequence for `gm.dls`, or already narrowed to a near-certain value
 even though the exact instruction is unlocated.

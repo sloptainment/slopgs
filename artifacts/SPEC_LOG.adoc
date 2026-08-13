@@ -3066,7 +3066,7 @@ bendCents = ((raw14 - 0x2000) * bendStruct->rpn0RangeCents) >> 13;    // 0x16d73
 i.e. exactly `(raw14 - 8192)/8192 * rangeCents`, with an arithmetic right
 shift (truncation toward negative infinity, not toward zero). Note the RPN0
 range is re-read here on every evaluation, so RPN0 is live, not latched.
-xref:SPEC.adoc#o7[O7] is retired.
+O7 is retired from ``SPEC.adoc``'s register.
 
 === 4. Pitch bend reaches the voice on a live per-block path, never through the note-on cents accumulator
 
@@ -3122,7 +3122,7 @@ that identification is now `[A]`, no longer `[I]` from the grid's shape.
 Because all three are read only on the note-trigger path while the live
 path reads only envelope/LFO/bend, "RPN1/RPN2 latched at note-on, not
 continuous" is now `[A]`-confirmed and no longer rests on `[M: probe 23]`
-alone. xref:SPEC.adoc#o10[O10] and xref:SPEC.adoc#o11[O11] are retired.
+alone. O10 and O11 are retired from ``SPEC.adoc``'s register.
 
 === 7. The store loop's bit-7 abort test is a one-byte lookahead, not a same-byte test
 
