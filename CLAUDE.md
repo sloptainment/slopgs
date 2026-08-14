@@ -1,1 +1,1 @@
-(See CLAUDE.adoc.)
+CLAUDE.adoc
