@@ -1,4 +1,4 @@
-/* rt.h -- runtime primitives per SPEC.adoc S1.5.1
+/* rt.h -- freestanding runtime primitives
  * (memcpy/memset/pow/log10/sqrt/sin + allocator); rt.c implements the portable
  * math half. */
 #ifndef RT_H

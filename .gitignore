@@ -9,4 +9,6 @@ dist/gm.dls
 dist/msgs.wasm
 dist/msgs-render
 dist/msgs-unit
+dist/msgs-vsti-x86.dll
+dist/vsti-test
 .venv

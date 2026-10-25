@@ -1149,16 +1149,14 @@ def p29_all_sound_off_gap():
     GENERAL SERUM measure 226 issues note-off + CC120 at every group boundary
     and the reference shows hard 25-90 ms silences there; our render shows no
     gap at all, so either our post-CC120 release is far too slow or CC120's
-    effect differs from ordinary note-off more than SPEC.adoc S4.x records.
-    SPEC.adoc marks the choke/fast-release divisor's base quantity [O]
-    (Part 5 S5.6/S5.8), so the exact rate is not recoverable from the spec.
+    effect differs from ordinary note-off more than the driver suggests.
 
     Structure: hold a note, fire CC120, then re-attack after a gap of
     400/200/100/50/25/12 ms. Reading the silence width per section gives the
     real post-CC120 decay directly. A control section repeats the shortest
     gap with an ordinary note-off instead of CC120, so the two paths can be
-    compared on identical material (SPEC.adoc S5.6 says they are distinct
-    routines, 0x19a2c vs 0x19aa4).
+    compared on identical material (the driver has two distinct routines,
+    0x19a2c vs 0x19aa4).
     """
     tr = Track()
     man = ["section\tstart_s\tmode\tgap_ms\tinstrument\tnote"]
@@ -1191,8 +1189,8 @@ def p30_tune_clamp_bend():
     CentsToRatio +-4800 clamp. Settles where latched tuning enters the pitch
     chain and whether live bend is subject to the same clamp.
 
-    SPEC.adoc S3.3.3 confirms CentsToRatio clamps to +-4800 cents [A:0x18e2c],
-    and S3.3.2's disassembled note-on sum is
+    CentsToRatio clamps to +-4800 cents [A:0x18e2c], and the disassembled
+    note-on sum is
     `fineTune + (key-unityNote)*100 + pitchBendCents` -- with NO RPN term.
     S4.4 lists the RPN1/RPN2 consumer as [O], never located. So the spec does
     not say whether latched tune lands inside or outside that clamp, and
@@ -1340,7 +1338,7 @@ def p32_ramp_shape():
 
     Sections A-F are CC11 expression steps, G-J are pitch-bend steps, all with
     the same repeat-and-average structure so the gain and pitch ramps are
-    measured on identical footing (SPEC_LOG #19).
+    measured on identical footing.
     """
     tr = Track()
     man = ["section\trep\tnote_onset_s\tstep_time_s\tkind\tfrom\tto"]
@@ -1530,7 +1528,7 @@ def p34_sfx_bank_identity():
     and our render of that passage tracks its
     fundamental **+693 to +960 cents above the reference** across 13 consecutive
     frames -- audible, and confirmed present with the pitch ramp disabled, so it
-    is not the ramp. SPEC.adoc rules out the obvious explanation: bank select is
+    is not the ramp. The driver rules out the obvious explanation: bank select is
     GS-gated at `device+0xf54` (`[A:0x1341e]`/`[A:0x13492]`) and that file sends
     a GS Reset 270 ms before its CC0=2, so the gate is open; and S3.1.2's
     three-tier fallback uses an exact-equality matcher with no masking or
@@ -1615,8 +1613,7 @@ def p35_decay_keyfollow():
     KEY? Turns the one number this project inferred into a measurement.
 
 169 of gm.dls's 235 instruments carry a usSource=3 (KEYNUMBER) ->
-    usDestination=0x0207 (EG1 decay) connection -- SPEC.adoc S2.4.3's own
-    confirmed table -- and this project dropped all of them until 2026-07-26,
+    usDestination=0x0207 (EG1 decay) connection [A:0x15868] -- and this project dropped all of them until 2026-07-26,
     so every acoustic patch decayed 3-5x too slowly (found on field/town.mid:
     a Steel-str.Gt chord that rings for the whole bar instead of fading).
 
@@ -1641,7 +1638,7 @@ def p35_decay_keyfollow():
 
     What is now shipped but NOT measured is the NORMALIZATION. The driver
     stores the high word of lScale (the full-scale timecent offset) and its
-    consumption code is unrecovered (`[O]`, SPEC.adoc Part 5 +0x13c), so the
+    consumption code was then unrecovered, so the
     per-note offset `kf*key/128` is DLS-1's own convention taken on faith. The
     corpus prefers /128 over /127 by 0.13 dB, which is not a measurement.
 
@@ -1709,7 +1706,7 @@ def p35_decay_keyfollow():
 def p36_kit_key_fallback():
     """What happens when a drum kit does not cover the key?
 
-    SPEC.adoc S3.1.3 `[A:0x147b7]`: FindInstrument itself walks the key ranges,
+    `[A:0x147b7]`: FindInstrument itself walks the key ranges,
     so an instrument whose regions miss the note is rejected exactly like a
     locale mismatch and S3.1.2's NEXT fallback tier gets a turn. Only one
     instrument in gm.dls can exercise this: the SFX kit (drum, program 56)
@@ -1737,7 +1734,7 @@ def p36_kit_key_fallback():
          means the fallback chain stops at the drum tier, a pitched trumpet
          note means it does not.
 
-    RESOLVED by the reference render `[M]`, see SPEC.adoc S3.1.2: C and D all
+    RESOLVED by the reference render `[M]` (unit.c S3.1.2): C and D all
     sound (and C's key 35 is spectrally the Standard kit's own key-35 region,
     log-spectrum r = 0.988), while E is digital silence -- the chain does
     stop at the drum tier.
@@ -1766,9 +1763,9 @@ def p37_rac_volume_order():
     """Does CC121 (Reset All Controllers) clobber a Channel Volume set at the
     SAME timestamp, and does it clobber one set at an EARLIER timestamp?
 
-    SPEC.adoc S4.3's CC121 row `[A:0x1351f]` says the handler re-schedules
-    Volume=100 -- "re-schedules", into S4.2.1's timestamp-keyed queues, which
-    this project does not have (SPEC_LOG #14): dispatch_cc writes the
+    The CC121 handler `[A:0x1351f]` re-schedules Volume=100 into the driver's
+    timestamp-keyed controller queues, which this project does not have:
+    dispatch_cc writes the
     reset straight over c->volume. tests/warm-echo.mid says that is wrong.
     Both its tracks send CC7 (76 on ch0, 52 on ch1) and then CC121 at tick 0,
     and the reference keeps 76/52: neutering the two CC121 events in the file
@@ -1846,7 +1843,7 @@ def p38_same_tick_locale():
       stream order -- each note-on takes the locale latched by the most recent
                       Program Change BEFORE it in the byte stream. What
                       smf.c's stable (abs_tick, seq) sort produces today.
-      look-ahead   -- SPEC.adoc S4.2.1/S4.7: the Bank/Program queue is
+      look-ahead   -- 0x16c50: the Bank/Program queue is
                       timestamp-keyed and a read ahead of the periodic flush
                       sees the LAST value scheduled at that timestamp, so every
                       note-on at the tick takes the last PC of the group.
@@ -1962,7 +1959,7 @@ def p39_high_sustain_decay():
     fit against ONE instrument (Piano note 60) looked like a universal
     constant and turned out to be key-follow specific to that single note,
     regressing every other instrument when shipped as a global multiplier
-    (see voice.c's decay_tc_keyfollow comment and SPEC_LOG Entry 1). Two
+    (a 2.85 decay multiplier fit to probe 04 lost on the corpus). Two
     agreeing data points is not enough to rule out coincidence here either.
     This cut adds more instruments spanning a wider decay_tc/sustain range,
     plus a velocity sweep, specifically to separate "real, roughly-fixed
@@ -2169,7 +2166,7 @@ def p41_sustain_decay_curve():
     sweep across sustain% (98.6% down to 90.4%) specifically to see whether
     the real decay-dB is a function of sustain% alone (and if so, fit its
     shape -- squared? some other dB-domain transform of the linear reading
-    SPEC.adoc's disassembly currently backs?) or whether it is confounded by
+    the disassembly currently backs?) or whether it is confounded by
     something else once more instruments are added.
 
     Two instruments deliberately share a sustain% with a probe-39 instrument
@@ -2408,8 +2405,8 @@ def p43_level_vs_pitch():
       the sounding pitch and the Type B excess is not a pitch-dependent level
       law. Spread means the WRITTEN key drives it -- region selection and
       whatever per-region attenuation comes with it -- which is the shape of
-      answer that would explain Type B, and which SPEC_LOG already half-flags
-      in noting that 001:080 and 008:080 lack decay key-follow (probe 35 avoids
+      answer that would explain Type B, already half-flagged by the fact
+      that 001:080 and 008:080 lack decay key-follow (probe 35 avoids
       them for that reason). This project already renders a 4.5 dB spread on
       000:080 between nat75 and bent75, so the axis is live either way; the
       reference says whether that spread is right.
@@ -2504,7 +2501,7 @@ def p44_release_shape():
     a constant. If ramp length tracks the patch, reading 1 is right and the
     factor falls out of the 12 points.
 
-    Section B: keys 48/60/72 on three of them. SPEC S2.4.3 has key-follow on
+    Section B: keys 48/60/72 on three of them. The driver has key-follow on
     the DECAY time; whether the release has it too is unrecorded, and a probe
     that cannot see it would need re-recording if it does.
     """
@@ -2568,8 +2565,8 @@ def p45_release_from_level():
 
     Sections B and C move the level WITHOUT moving the EG, which is the
     distinction voice_step_envelope's finish detection already had to make
-    (SPEC S5.7 reads +0x13c as a gain-inclusive log-domain level, and this
-    project's AUDIBLE_FLOOR check depends on that reading). Both use the
+    (+0x13c was then read as a gain-inclusive log-domain level, and this
+    project's AUDIBLE_FLOOR check depended on that reading). Both use the
     flat-sustain sine so the EG is pinned at its plateau:
 
       B: velocity 127/96/64/32/16 -- moves the note's own attenuation
@@ -2622,7 +2619,7 @@ def p46_noteoff_grid():
     ~0.5 ms), so it is deterministic -- not real-time scheduling jitter, and
     not anything the Windows-side sequencer could produce.
 
-    That points at the driver's own drain: SPEC `[A:0x12bd6]`, called once per
+    That points at the driver's own drain: `[A:0x12bd6]`, called once per
     audio block from the render callback `[A:0x130af]` with now+nframes, pops
     every event due during the COMING block and acts on it immediately. A
     note-off would then take effect at the block start -- early by up to one
@@ -2685,8 +2682,8 @@ def p46_noteoff_grid():
 def p47_gm_off_state():
     """What GM System Off leaves behind: GS mode, and the instrument set.
 
-    SPEC.adoc S4.5 has System Off calling the same device reset System On does,
-    so it clears GS mode; S4.9 has it releasing the loaded collection, which is
+    System Off calls the same device reset System On does (0x136e1), so it
+    clears GS mode; it also releases the loaded collection (0x13700), which is
     `[I]` and is what this probe is really for. One case discriminates all
     three possibilities at once. After a GS Reset, bank 8 is selectable, so
     008:080 (Sine Wave) and 000:080 (Square Wave) are the two audible outcomes:
@@ -2726,7 +2723,7 @@ def p47_gm_off_state():
 
 
 def p48_rhythm_part_reset():
-    """USE RHYTHM PART falls into the shared reset tail (SPEC.adoc S4.5).
+    """USE RHYTHM PART falls into the shared reset tail (0x137b5).
 
     The message is aimed at block 5 -- a part nothing here plays on -- so any
     effect on channels 1 and 2 is the tail's device-wide controller reset, not
@@ -2765,7 +2762,7 @@ def p48_rhythm_part_reset():
 def p49_gm_off_during_note():
     """What happens to a voice already sounding when GM System Off arrives.
 
-    SPEC.adoc S4.9.1 leaves one question open: whether a voice that is already
+    One question is open (INVESTIGATE.adoc#i-gm-off-voices): whether a voice that is already
     sounding when the message lands holds a reference of its own to the
     instrument collection, and so survives the collection release. Probe 47
     could not speak to this -- nothing was sounding when its System Off
@@ -2778,10 +2775,10 @@ def p49_gm_off_during_note():
     `[A]`-only today and worth an `[M]`.
 
     What it CANNOT do: cleanly settle the refcount question by itself. Traced
-    from SPEC.adoc S4.5: on the GM path the driver calls `ResetDevice`, then
+    from the binary: on the GM path the driver calls `ResetDevice`, then
     the collection release (`0x13700`), then falls into the shared reset tail,
     which runs `ResetAllChannelControllers` -- and that tail reclaims every
-    sounding voice immediately (SPEC.adoc S4.6.2, `0x123de`) regardless of
+    sounding voice immediately (`0x123de`) regardless of
     whether the release actually unlinked the collection. So the voice is cut
     by the tail under BOTH hypotheses; the only window in which "voice holds
     a reference" and "voice does not" would differ audibly is between the

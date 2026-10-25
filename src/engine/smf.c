@@ -1,5 +1,5 @@
-/* smf.c -- Standard MIDI File parser and sequencer. SPEC.adoc S1.5.4: not part
- * of the original driver, ordinary generic SMF handling. */
+/* smf.c -- Standard MIDI File parser and sequencer. Not part of the original
+ * driver: ordinary generic SMF handling. */
 #include "smf.h"
 #include "render.h"
 #include "rt.h"
@@ -193,15 +193,19 @@ static void fill_cb(uint32_t abs_tick, uint32_t seq, uint8_t status, uint8_t d1,
     e->sample_time = 0;
 }
 
-/* Bank/Program note-lookahead: empirical fit to probes 38/40/42, not the
- * driver's reach-to-end mechanism -- SPEC_LOG item51 */
+/* [F] Bank/Program look-ahead: at one tick a note takes the last Program
+ * Change before the NEXT note event of that tick, not the one before it in the
+ * stream. Probe 40 scores 13/13 (stream order 11/13, highest-bank 8/13); probe
+ * 38 7/8. Probe 38 case F contradicts probe 40 case G on identical input, and
+ * the driver's own read (0x16c50: every pending value <= the query time) does
+ * not predict this -- INVESTIGATE.adoc#i-bankprog-lookahead. */
 #ifndef SMF_BANKPROG_LOOKAHEAD
 #define SMF_BANKPROG_LOOKAHEAD 1
 #endif
 
-/* SPEC.adoc S6.6/[A:0x13054]: drains every event due in the buffer before
- * rendering it (SPEC_LOG.adoc item21-resolved) -- this is the note-off early
- * release probe 46 measures. Length = SERVICE_BLOCK_FRAMES (voice.h). */
+/* [A:0x13054]: drains every event due in the buffer (pos + nframes) before
+ * rendering it -- the note-off early release probe 46 measures (0-27 ms).
+ * Length = SERVICE_BLOCK_FRAMES (voice.h). */
 
 static int is_note_event(const Event *e)
 {
@@ -486,7 +490,8 @@ uint32_t smf_render(int16_t *out, uint32_t frames)
             chunk = 1;
 
         /* Drain-ahead: every event due in this block acts now; only a note-on
-         * uses its true sub-block offset (SPEC_LOG.adoc item32). */
+         * uses its true sub-block offset; a USE RHYTHM PART cut lands at the
+         * block top, as the reference's is instantaneous (probe 48). */
         while (g_event_index < g_event_count &&
                g_events[g_event_index].sample_time < g_sample_pos + chunk)
         {

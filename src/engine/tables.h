@@ -1,4 +1,4 @@
-/* tables.h -- runtime-built lookup tables, SPEC.adoc Appendix T. */
+/* tables.h -- the driver's runtime-built lookup tables. */
 #ifndef TABLES_H
 #define TABLES_H
 

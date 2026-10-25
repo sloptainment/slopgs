@@ -1,6 +1,6 @@
 /* msgs.h -- public ABI for the freestanding wasm32 MIDI synth.
- * This is the fixed ABI from SPEC.adoc Part 1 S1.5.3. Do not change signatures.
- */
+ * Fixed ABI shared by the wasm and native builds; pointer arguments are byte
+ * offsets into the engine's memory. Do not change signatures. */
 #ifndef MSGS_H
 #define MSGS_H
 

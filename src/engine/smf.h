@@ -1,5 +1,5 @@
-/* smf.h -- Standard MIDI File parser and sequencer. SPEC.adoc S1.5.4: not part
- * of the original driver -- ordinary SMF 0/1 parsing and a tick->sample
+/* smf.h -- Standard MIDI File parser and sequencer. Not part of the original
+ * driver -- ordinary SMF 0/1 parsing and a tick->sample
  * scheduler, no reverse-engineered behavior to match. */
 #ifndef SMF_H
 #define SMF_H

@@ -1,8 +1,6 @@
-/* dls.h -- RIFF/DLS parse of gm.dls into instruments, regions, waves. SPEC.adoc
- * Part 2. */
+/* dls.h -- RIFF/DLS parse of gm.dls into instruments, regions, waves. */
 /* Field names are chosen for clarity in this clean-room reimplementation, not a
- * claim of matching the driver's in-memory offsets (SPEC.adoc Part 2 S2.9
- * documents those for the original binary only). */
+ * claim of matching the driver's in-memory offsets. */
 #ifndef DLS_H
 #define DLS_H
 
@@ -25,8 +23,8 @@ typedef struct Wave
     uint8_t no_loop; /* wsmp cSampleLoops==0, wave scope */
 } Wave;
 
-/* art1 usSource values gm.dls/the driver actually use, SPEC.adoc S2.4.3 (not
- * the full DLS-1 enumeration -- just the rows apply_art1() switches on). */
+/* art1 usSource values the driver dispatches on (0x157da; not the full DLS-1
+ * enumeration -- just the rows apply_art1() switches on). */
 enum ArtSource
 {
     ART_SRC_NONE = 0x0000, /* unconditional (RPN-less) block */
@@ -36,8 +34,8 @@ enum ArtSource
     ART_SRC_EG2 = 0x0005,
 };
 
-/* art1 usDestination values, SPEC.adoc S2.4.3; ART_DST_PAN_COARSE reuses the
- * spec's reserved 0x0002 slot for the same pan_cb field (see apply_art1). */
+/* art1 usDestination values; ART_DST_PAN_COARSE is DLS-1's reserved 0x0002,
+ * which the driver writes into the same pan field as 0x0004 (0x15a26). */
 enum ArtDest
 {
     ART_DST_ATTENUATION = 0x0001,
@@ -58,17 +56,16 @@ enum ArtDest
     ART_DST_EG2_SUSTAINLEVEL_HI = 0x030e,
 };
 
-/* art1 usControl, src=ART_SRC_LFO -> dest=ART_DST_PITCH only, SPEC.adoc S2.4.4.
- */
+/* art1 usControl with src=ART_SRC_LFO; any other value is dropped
+ * (0x158e8). */
 enum ArtLfoControl
 {
     ART_CTRL_NONE = 0x0000,
     ART_CTRL_CC1 = 0x0081, /* modwheel */
 };
 
-/* The 0x68-byte resolved articulation block, distinct from Wave (SPEC.adoc
- * S3.2, SPEC_LOG.adoc item2's S2.9.2-vs-S3.2 field-ownership fix). Shared
- * per-instrument default or private per-region. */
+/* The 0x68-byte resolved articulation block, distinct from Wave: a region's
+ * own lart, else its instrument's shared one (0x162a6). */
 typedef struct Artic
 {
     /* raw DLS timecents */
@@ -112,6 +109,8 @@ typedef struct Region
     uint8_t no_loop;
     uint8_t low_key, high_key;
     uint8_t key_group;
+    /* rgnh.fusOptions bit 0: may sound over itself (no same-note retrigger) */
+    uint8_t self_nonexclusive;
     uint16_t wave_pool_index;
     uint8_t has_own_wsmp; /* region carried its own wsmp chunk (S2.3.4) */
 } Region;
@@ -143,10 +142,12 @@ typedef struct DlsCollection
 extern DlsCollection g_dls;
 
 /* Parses a DLS-1 RIFF collection in place; sample data is referenced into
- * `data`, never copied (SPEC.adoc S1.5.5). */
+ * `data`, never copied (the driver reads the file into one never-freed
+ * buffer, 0x15efa). */
 int dls_load(const uint8_t *data, uint32_t len);
 
-/* Three-tier bank/program/drum fallback + region lookup, SPEC.adoc S3.1. */
-Region *dls_find_region(uint32_t locale, uint8_t note);
+/* Three-tier bank/program/drum fallback + region lookup (0x12e19-0x12e7a). */
+/* `resolved` (nullable) receives the locale after fallback stripping. */
+Region *dls_find_region(uint32_t locale, uint8_t note, uint32_t *resolved);
 
 #endif /* DLS_H */

@@ -1,15 +1,20 @@
-/* render.c -- the mixer: interpolation, gain, saturating accumulate. SPEC.adoc
- * Part 6 (S6.4.2 Q12 phase, S6.4.4/S6.4.5 interpolate-then-gain, S6.4.6
- * saturating accumulate, S6.4.8 loop-end subtraction). */
+/* render.c -- the mixer: Q12 phase, interpolate-then-gain, per-voice
+ * saturating accumulate into int16, loop-end by one subtraction (live MMX
+ * variant 0x1a360). */
 #include "render.h"
 #include "voice.h"
 
 #ifndef GAIN_SEGMENT_FRAMES
-/* SPEC.adoc S6.6/[A:0x18fba]: min(next envelope change, device->+0x18, buffer
- * end), gain sampled at the segment END -- corpus sweep table and mechanism at
- * SPEC_LOG item 21 (item57 addendum). ponytail: no separate knob for the
- * driver's 50ms cap -- dead at every swept length; add if the block ever
- * exceeds 1103 frames. */
+/* [F] Segment = min(next envelope change, device->+0x18, buffer end); the gain
+ * is sampled at the segment END and ramped linearly in amplitude across it
+ * (0x19644, 0x19490, 0x18fba). The driver's cap is (rate+19)/20 = 1103 frames
+ * (0x128f9); the binding length is the caller's KS buffer, which the driver
+ * does not choose. Probes 45/46 measure ~512 frames, probe 44 implies
+ * 24-28 ms; the corpus sweep favours 128 (128: -31.18, 256: -31.14,
+ * 512: -30.90 dB mean). 256 ships: best envelope r and best on sine-gate/
+ * sine2. 512 costs 08_reverb +9.5 dB and 03_velocity +7.1 dB, both
+ * decay-dominated -- INVESTIGATE.adoc#i-segment-length. ponytail: no knob
+ * for the 1103-frame cap, dead at every swept length. */
 #define GAIN_SEGMENT_FRAMES SERVICE_BLOCK_FRAMES
 #endif
 
@@ -74,14 +79,13 @@ static void render_voice(Voice *v, int16_t *out, uint32_t frames,
             v->amp_left = seg;
         }
 
-        /* phase step is a ramp accumulator (SPEC.adoc S6.6/S6.4.1, SPEC_LOG
-         * entry 9), advanced before use so sample 0 already reflects one step
-         */
+        /* phase step is a ramp accumulator held between refreshes (0x18fba),
+         * advanced before use so sample 0 already reflects one step */
         if (v->phase_step_ramp_step)
         {
-            /* 1/256 phase_step LSB precision required below ~a semitone;
-             * whole-LSB truncation measured to make the ramp inert -- SPEC_LOG
-             * item52 */
+            /* 1/256 LSB precision: a +-2 semitone bend at key 72 moves ~420
+             * LSBs, under 1 per sample, so a whole-LSB slope turned the ramp
+             * into a rate limit (inert from 10 to 40 ms on probe 33) */
             v->phase_step_ramp_acc += v->phase_step_ramp_step;
             /* arithmetic, signed */
             int32_t step = v->phase_step_ramp_acc >> 8;
@@ -151,12 +155,12 @@ void render_frames(int16_t *out, uint32_t frames)
         uint32_t chunk = frames - done;
         /* sub-block modulation granularity: re-slice into LFO_UPDATE_FRAMES
          * sub-chunks so a long event-free held note's LFO still oscillates
-         * instead of freezing at one offset -- SPEC_LOG entry 2 */
+         * instead of freezing at one offset */
         if (chunk > LFO_UPDATE_FRAMES)
             chunk = LFO_UPDATE_FRAMES;
-        /* SPEC.adoc S5.4: reserve top-up runs once per wall-clock service tick,
-         * NOT once per render_frames() call (smf.c splits at every event,
-         * ~800/s measured) -- SPEC_LOG entry 14 */
+        /* reserve top-up runs once per wall-clock service tick, NOT once per
+         * render_frames() call: smf.c splits at every event (~800/s on
+         * HueArme-Weekend), which cascaded Branch B into silence */
         voice_topup_tick(chunk);
         /* per-block modulation recompute (pitch S4.4/LFO, gain
          * S3.5/S3.6/S3.10): live-read every sub-chunk so a change reaches

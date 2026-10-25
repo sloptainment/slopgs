@@ -1,5 +1,6 @@
-/* tables.c -- SPEC.adoc Appendix T. All tables truncate toward zero (S1.4.2,
- * driver's 0x106e0 helper) via a plain (int32_t) cast. */
+/* tables.c -- the driver's runtime-built tables. All truncate toward zero (the
+ * driver's 0x106e0 helper) via a plain (int32_t) cast; x87 control word 0x027F
+ * (53-bit, round-to-nearest) makes plain double arithmetic reproduce them. */
 #include "tables.h"
 #include "rt.h"
 
@@ -58,8 +59,9 @@ void tables_build(void)
         g_table_dbamp[i + 1000] = trunc_i32(v);
     }
 
-    /* Table C: SPEC.adoc T.4 formula; the 1/200, 1/96 constants are float32 in
-     * the original and load-bearing (SPEC_LOG item46). */
+    /* Table C, builder 0x1685e-0x168b7: the 1/200 and 1/96 constants are
+     * float32 in the original and load-bearing; an earlier build missed the
+     * log10 and produced a parabola. */
     g_table_envshape[0] = 0;
     for (i = 1; i <= 200; i++)
     {

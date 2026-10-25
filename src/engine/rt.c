@@ -1,8 +1,7 @@
 /* rt.c -- portable runtime math: pow/log10/sqrt/sin/exp. No
  * libc/libm/allocator. sqrt is the hardware f64.sqrt builtin; exp/log/sin are
- * from-scratch Taylor-series
- * (SPEC.adoc S1.4.3: not bit-exact vs. any CRT, but the driver's margins
- * tolerate it). */
+ * from-scratch Taylor-series: not bit-exact vs. any CRT, which the driver's
+ * truncation margins tolerate (unit.c S1.4.3). */
 #include "rt.h"
 
 typedef union

@@ -1,181 +1,65 @@
-:sectnums: 
+:sectnums:
 
 == What slopgs is
 
-This is a (clean-room) re-implementation of `swmidi.sys` (MSGS), specifically the
-version shipped with Windows XP Service Pack 3.
+A clean-room re-implementation of `swmidi.sys` (MSGS) as shipped with Windows
+XP SP3. The aim is a clone that *sounds identical*, quirks included.
 
-The aim is to make a clone that *sounds identical* to the synth in question in
-behavior including all of its quirks and characteristics.
+== Workflow
+
+When a *behavioral finding changes* (something the driver does is newly
+known, or an assertion is now known to be wrong) work in **exactly this
+order**, finishing each step before the next:
+
+. `src/unit.c`: add or replace the assertion, with its evidence in the
+  description, and confirm `make unit` fails. *Red.*
+. The engine under `src/`: implement until the assertion passes and the
+  corpus gate holds: targeted item improves, mean does not regress. *Green.*
+. Optimize what you just added while both stay green. *Refactor.*
+. `INVESTIGATE.adoc`: delete what this closed; add what it opened.
+. `impl-chart/CHART.adoc`: if a musician would notice, suggest changes to
+  the user, who edits it.
+
+**Whenever a `unit.c` assertion and `src/` disagree, the assertion wins**: the
+fix is the engine. Only new evidence from the binary or a measurement may
+change what it asserts.
+
+The one exception: if matching the driver regresses the corpus mean, ship
+the fit instead, mark the assertion `todo_ok` with an `INVESTIGATE.adoc` id,
+and record both A/B numbers in that entry.
 
 == Where to go
 
 === `artifacts/`
 
-Generated and non-generated analysis material. Don't treat this as residue,
-but as your primary experimental workspace.
+Your primary experimental workspace.
 
-*Write to exactly the documents specified below.* Anything you want to write down
-belongs in one of them.
+`swmidi.sys`:: The driver binary: the evidence for driver questions.
 
-`SPEC.adoc`:: Directly analyzed from the driver this is sourced from. Use this as a proxy for checking the behavior of the original `swmidi.sys`.
+`INVESTIGATE.adoc`:: Everything unresolved: driver behavior not yet
+recovered, engine behavior that knowingly differs from the driver, and the
+justification of every fitted (`[F]`) value: the value, what it was fit
+against, the metric, and where a future pass should look to retire it.
 +
-When writing to this file, the resulting document MUST sound authoritative,
-in the present tense. It must NOT contain provenance traces
-outside of the markers explained below. It must also NOT contain
-verification scripts and methods, just cold hard data and algorithms.
-It must NOT contain references to outdated findings and superseded
-behavior.
-+
-It must also not read as a set of stapled-together reports: no "this pass" /
-"an earlier pass" / "the companion section"/  "not retained"/ script names / dates.
-+
-Use code blocks only for: pseudocode, array dumps. Use tables
-for obviously-tabular data.
-+
-Behavioral claims in this file were implied by:
-+
-* `[A]` instruction-level analysis
-* `[D]` gm.dls analysis
-* `[M]` measured references
-* `[I]` inferred
-* `[O]` open, to be resolved
-* `[F]` empirical fit, also to be resolved
-+
-**`[A] findings` are written as pseudocode, never as a disassembly listing.** Give
-the algorithm in C-like pseudocode with real field names, and cite the VMAs in
-trailing comments on the lines they came from:
-+
-[source,c]
-----
-clamp = (unsigned)sampleRate / 70; // 0x1987f, 0x19882
-if (seg->releaseDuration > clamp)  // 0x1988a - 0x19899
-    seg->releaseDuration = clamp;  // 0x1989b
-----
-+
-Not `mov`/`imul`/`jne` transcribed from `objdump`. Registers and mnemonics are
-your scratch work, not the finding — a reader cannot tell from them whether
-you understood the code, and neither can you. Name a bare VMA inline
-(`` `idiv 0x7f` at `0x1992a` ``) when one instruction *is* the point.
-+
-Any provenance, logs, explanatory behavior MUST be written in the
-accompanying `SPEC_LOG`.
+Navigate it by grep: `grep -n '^== ' artifacts/INVESTIGATE.adoc` lists every
+entry by id; jump with `grep -n '\[#i-release-floor\]'` and read ~40 lines.
+Source comments and `todo_ok` reasons cite entries as
+`INVESTIGATE.adoc#i-…`. Each entry is *Known* / *Open* / *Settle by* /
+*Where*. Delete an entry once it is closed; the assertion is the record.
 
-`SPEC_LOG.adoc`:: Meant to document apparent discrepancies
-between what was implied by the driver code vs. what is actually
-observed. This is also where fitted values (`[F]`) are justified: the value,
-what it was fit against, the metric, and where a future RE pass should look
-to retire it.
-+
-Be wary, though, that some items may be the result of not actually
-implementing a certain feature of the `SPEC.adoc`.
-+
-Each entry is sorted by date, latest-first, and titled `== YYYY-MM-DD — ...`.
-Any correction to the SPEC must be noted here. Verification methods,
-provenance tracing, measurement harnesses, superseded readings and the
-reference-capture ceiling MUST go here, not SPEC.
-+
-Two numbering series run through the entries and are cited by number:
-**items** (`item1`…) are discrepancies and gaps, **entries** (`entry1`…) are
-fitted values. The numbers are stable ids, not positions in the document.
-+
-``SPEC.adoc``'s pseudocode rule applies here too, and for the same reason:
-code in an entry is there to make the finding checkable, not to prove you
-read the binary. Unlike `SPEC.adoc`, this file may also show measurement
-output — profiles, per-item score tables, A/B builds — since that is exactly
-the provenance it exists to hold. Prefer a table to a code block for those.
+`impl-chart/CHART.adoc`:: The user-facing *MIDI Implementation Chart*: what a
+musician should expect, matching `unit.c` and the engine, free of internal
+code details.
 
-[IMPORTANT]
---
-**Read protocol for both files.** Neither is ever read whole. `SPEC.adoc` is
-~6,400 lines and `SPEC_LOG.adoc` ~9,000; the Read tool returns 2,000 lines by
-default and gives no warning that the rest exists, which is what produces
-read-then-`head`-hunt flailing.
+`make_probes.py`:: Generates deterministic MIDIs into `probes/`, each
+testing one behavior; references go in `probe-results/`. The GS Sine Wave
+patch (`008:080`) makes clean probes.
 
-* The entry point is `grep -n '^=\+ ' artifacts/SPEC.adoc` (192 headings) or
-  `grep -n '^== ' artifacts/SPEC_LOG.adoc` (82 entry titles, each effectively
-  an abstract), then Read with `offset`/`limit` on the hit.
-* Every heading in `SPEC.adoc` carries an anchor (`[#s3-6]`, `[#o16]`), so
-  `grep -n '\[#s3-6\]'` jumps straight to a section cited from anywhere else.
-* The LOG is grepped, not read. Look up an id with `grep -n '\[#item49\]'`.
-* The `.pdf` siblings are for humans. Never Read them — they are 4.8 MB /
-  2.9 MB and PDF reads cap at 20 pages.
---
-
-[NOTE]
---
-This applies when a *behavioral finding changes* — a claim in `SPEC.adoc` is
-now known to be wrong, incomplete, or superseded. When it does, the four
-artifacts are written in **exactly this order**, and each one is finished
-before the next is touched:
-
-. `SPEC_LOG.adoc` — the finding, its evidence, and the measurements.
-. `SPEC.adoc` — COMPLETELY REPLACE, not append to, the passage(s) the finding
-  invalidates. Same for any table, open-item list or appendix entry that
-  repeated the old reading; grep for it, a superseded claim usually has
-  copies.
-. `unit.c` — add or replace the test for this finding, and confirm it fails
-  against the current engine. *Red.*
-. The engine under `src/` — implement until the test passes, then run the
-  corpus gate. *Green.*
-. Optimize what you just added. *Refactor.*
-. `impl-chart/CHART.adoc` — only if a musician would notice.
-
-Do NOT reorder this because the code change is small or obvious. Writing the
-log first is what forces you to say what you actually know, and the SPEC edit
-is what finds the other passages that were wrong for the same reason — both of
-which routinely change what the engine edit should be. Landing the code first
-means the docs get written to justify the diff. The red test is what forces
-the SPEC edit to be checkable instead of merely asserted — a passage that
-can't be turned into a failing assertion probably wasn't specific enough yet.
-
-**Whenever a `unit.c` assertion and `src/` disagree, `SPEC.adoc` wins.** A
-`unit.c` test exists to check the engine against the SPEC, not against itself
-— if it fails, the fix is the engine (step 4), never loosening the assertion
-and never rewriting the SPEC to match what `src/` happens to do. Only a new
-finding, landed the normal way starting at step 1, may change what a test
-asserts.
-
-The one thing that legitimately precedes step 1 is **measurement**: you cannot
-write down a number you have not taken. Explore, disassemble, build scratch
-variants and score them freely — but scratch builds are throwaway. Revert them
-before step 1 and reapply the change properly at step 3, so nothing ships that
-was never written down.
-
-It does NOT apply when `SPEC.adoc` is unchanged and another document is merely
-being brought back into agreement with it — e.g. fixing a `CHART.adoc` claim
-that never matched the SPEC in the first place. That is a documentation fix:
-edit the document and stop. `SPEC_LOG.adoc` records driver-vs-observed
-discrepancies and `[F]` justifications, nothing else.
---
-
-`impl-chart/CHART.adoc`:: A user-facing *MIDI Implementation Chart* that matches the `SPEC.adoc`.
-+
-Because it describes the practical MIDI implementation (i.e. what a musician
-should expect when using this synth), it must be free of any internal code details.
-It is as current as `SPEC.adoc` is, and so `CHART.adoc` must be updated whenever
-behavior in `SPEC.adoc` does.
-+
-Any assets/images you may have created should be in the same `impl-chart/` directory.
-
-`make_probes.py`:: Script to generate MIDIs that aim to test a
-specific aspect of the engine.
-+
-You can add probes here to "cleanly" and deterministically test a specific engine behavior. Some tests may be useful if you use the GS Sine Wave patch:
-that one is `008:080`.
-+
-All MIDIs must be generated in `probes/`. All reference renderings must be in
-`probe-results`. Prompt the user to make some if they don't exist.
-
-`score.py`:: CLI port of `dist/compare.js`'s two headline numbers --
-envelope correlation `r` and level-normalized spectral residual dB -- for
-every MIDI that has a reference FLAC, across `field/`, `tests/` and
-`probes/` (`probe-results/NN.flac` is matched to `probes/NN_name.mid`).
-+
-This is the corpus gate: run it before and after a change and check the
-targeted item improves while the mean does not regress. Needs the venv
+`score.py`:: The corpus gate: scores every MIDI that has a reference FLAC
+under `field/`, `tests/` and `probes/`. Ask the user to record any missing
+reference. Needs the venv
 (`python3 -m venv .venv && .venv/bin/pip install -r requirements.txt`) and
-`ffmpeg`; ~25s for the full 47-item corpus.
+`ffmpeg`; ~25s for the full corpus.
 +
 [source,console]
 ----
@@ -184,132 +68,68 @@ $ .venv/bin/python artifacts/score.py 20 HueArme-Weekend   # named items
 $ MSGS_RENDER=/path/to/other-build .venv/bin/python artifacts/score.py   # A/B a build
 ----
 +
-A third column, `dead`, reports milliseconds of digital silence in the
-render that the reference does not have. Read it on `field/` items only:
-a sparse probe's reference never drops below the threshold (dither), so its
-genuine inter-case gaps all count.
+The `dead` column reports milliseconds of digital silence in the render that
+the reference does not have. Read it on `field/` items only: a sparse probe's
+reference never drops below the threshold (dither), so its genuine
+inter-case gaps all count.
 
-=== `src/`
+=== `src/engine/`
 
-The source code for the engine.
+Freestanding C: no libc, libm, malloc or stdio. `rt.c` supplies
+`memcpy`/`memset`/`pow`/`log10`/`sqrt`/`sin` and a bump allocator; plain
+IEEE-754 `double` is all the arithmetic needs. `gm.dls` is parsed in place
+and sample data is referenced, never copied. The ABI in `msgs.h` is fixed.
+`smf.c` has no counterpart in the driver. Target-specific code (`wasm.c`,
+`cli.c`) lives in `src/`.
 
-This contains the actual synthesizer, the Standard MIDI File reader and
-sequencer, as well as the necessary interfaces.
+=== `tests/`, `field/`
 
-The intended initial platforms are:
-
-. WebAssembly, for use as a browser player.
-. A standalone command line utility, for use a general purpose player and renderer. (This is also the primary platform used for automated testing.)
-
-=== `tests/`
-
-MIDIs specifically built to test one aspect of the engine. They are each accompanied by one FLAC
-reference rendering.
-
-They may be derived from copyrighted work, but they exist strictly
-to test one specific aspect of the synthesizer that generated test
-probes might not adequately resolve.
-
-=== `field/`
-
-If present, it contains real world copyrighted
-MIDIs and a FLAC rendering. If a user forgets
-to make a reference recording for a MIDI they
-asked, you must remind the user to do so.
+`tests/`: MIDIs for behavior a generated probe can't pin down, one reference
+FLAC each. `field/` (optional): real-world MIDIs with reference FLACs.
 
 === `dist/`
 
-What should be in here:
-
-. Built `msgs.wasm` binary
-. Built native `msgs-render` binary
-. `gm.dls`, expect the user to supply one.
-. The driver `bg-sound2` JS file
-. Comparison/test pages.
-* `compare.js` containing spectrogram code.
-* `compare.css`, shared by all three pages.
-
-The user is assumed to run a web server from the repo root.
+`gm.dls` is user-supplied. `compare.js` holds the spectrogram code for the
+`compare-*.html` pages. The user serves the repo root over HTTP.
 
 == What "identical" means
 
-Not only must a listener can't tell the difference between `slopgs`
-and the real MSGS at a casual listen, but it must also be measurably at least
-near identical, especially on very specific synthesizer behavior.
+Indistinguishable at a casual listen, and measurably near-identical,
+especially on specific synth behavior.
 
 === Measuring
 
-First:
+References are captured on an emulated XP guest through host loopback, not
+from the driver's buffer: ±1 LSB dither per channel, so bit-exactness cannot
+be shown. Repeat captures agree to ~1% on percussive attacks and ~0.02% on
+sustained tones; pick the tolerance by signal type.
 
-. Ensure the rendered corpus has the same rate as the reference.
-. Crop the reference and the rendered corpus so that they align. The misalignment
-is usually because the starting delay is different.
+. Resample the reference to 22050 Hz, the driver's only rate.
+. Normalize for dither.
+. Align the two (start delays differ), e.g. by RMS-envelope or FFT
+  cross-correlation.
+. Compare analytically and visually; when one is inconclusive, use the
+  other.
 
-[TIP]
---
-Some tools that have been used for automated alignment include RMS envelope cross-cor, sample-domain FFT cross-cor,
-etc.
---
-
-There are two ways to measure "identical". Both are complementary. If you can't conclude
-from one, try the other.
-
-CAUTION: The reference may have dithering, so please normalize for that first!
-
-Analytical:: This practically means comparing peak/RMS/spectral dB per-probe. It also means finding envelope correlation `r` against a specific track to ensure peak "closeness" to the reference track.
-+
-Worse = residual dB less negative. Ship after:
-+
-. Targeted probe improves
-. Corpus-wide mean not regressing
-
-
-Visual:: This practically means: building a spectrogram out of the reference and the rendered version.
-+
-Make sure you clearly label which one is slopgb, and which one is the reference.
-You may also need to make it big enough for better analysis.
+Analytical:: Peak/RMS/spectral dB residual per probe (nearer 0 dB is worse),
+and envelope correlation `r` against the reference track.
+Visual:: Large spectrograms of both, labelled `slopgs` and `reference`.
 
 === Confirming
 
-A listener should listen to the probes and confirm
-slopgb sounds "basically the same". Wild deviations usually
-jump out every once in a while, and you must encourage
-the listener to point out:
-
-. At which time the deviation occured.
-. Which measure this corresponds to, if possible.
-+
-If you
-aren't able to get that from the listener, you should
-attempt to infer that from the given timestamp.
-. Which instrument the deviation happened in.
-+
-This may help you isolate the affected track.
-
-If the listener is able to isolate the track and
-affected portion, treat it as a test corpus and
-perform analysis on it.
+Ask the listener to audition the probes and, for any deviation, report the
+time, the measure (infer it from the timestamp if they can't), and the
+instrument. A passage they isolate becomes a `tests/` item; analyse it.
 
 == Code style
 
-`.clang-format` is available, so use this after a code edit.
+Format only your hunks (the tree is not fully formatted):
+`git diff -U0 HEAD -- src | clang-format-diff -p1 -i`.
 
-Never comment on the same line:
-
-[code,c]
-----
-// NO
-
-int something; // Something something
-
-int something2; /* Something else
-                   that's a bit longer */
-----
+Comments go on their own line, above the code:
 
 [code,c]
 ----
-// YES
-
 // Something something
 int something;
 
@@ -318,9 +138,5 @@ int something;
 int something2;
 ----
 
-[NOTE]
---
-Exception to be made for structs and short function calls.
-But make sure the resulting line is still < 80 chars, and
-the comment must not continue in the next line.
---
+Exception: structs and short function calls may take a trailing comment
+that fits on the same line, under 80 chars.

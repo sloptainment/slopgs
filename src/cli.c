@@ -14,8 +14,9 @@
 #include "engine/tables.h"
 #include "engine/voice.h"
 
-/* allocator: malloc, never freed -- gm.dls's sample data (SPEC.adoc S1.5.5)
- * must outlive every render call; the process renders once and exits. */
+/* allocator: malloc, never freed -- gm.dls's sample data is referenced in
+ * place and must outlive every render call; the process renders once and exits.
+ */
 
 static uint32_t g_total = 0;
 
@@ -222,11 +223,11 @@ static int selftest(const char *dls_path, const char *smf_path)
 
     /* Pool saturation: Branch B fast-releases active voices, which keep
      * rendering for their full release before recycling -- exactly the defect
-     * TOPUP_INTERVAL_FRAMES (voice.c, SPEC_LOG "reserve top-up tick period")
-     * exists to prevent. SPEC.adoc S5.5 [M]: 80 held note-ons must leave 48
-     * sounding. Renders via render_frames, not smf_render: dispatching song
-     * events into a fixed-frame window shifted it and cost one voice (47/48)
-     * in an earlier version of this check. */
+     * TOPUP_INTERVAL_FRAMES (voice.c) exists to prevent. Probes 20/21: 80
+     * held note-ons must leave 48 sounding (unit.c S5.5). Renders via
+     * render_frames, not smf_render: dispatching song events into a fixed-frame
+     * window shifted it and cost one voice (47/48) in an earlier version of
+     * this check. */
     synth_construct();
     for (int k = 0; k < 80; k++)
         voice_note_on(0, 36 + (k % 60), 100);
@@ -241,7 +242,7 @@ static int selftest(const char *dls_path, const char *smf_path)
     {
         fprintf(stderr,
                 "FAIL: 80 held note-ons left %d voices sounding, expected 48"
-                " (SPEC.adoc S5.5 [M]) -- reserve top-up cadence?\n",
+                " (probes 20/21) -- reserve top-up cadence?\n",
                 surviving);
         fail = 1;
     }

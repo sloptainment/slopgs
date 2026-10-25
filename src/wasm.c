@@ -1,4 +1,4 @@
-/* wasm.c -- freestanding wasm32 interface: exported ABI (SPEC.adoc S1.5.3),
+/* wasm.c -- freestanding wasm32 interface: exported ABI (msgs.h),
  * bump allocator, and the libc-named mem* symbols this target has no libc
  * for. rt.c is portable math; cli.c is the other interface (native). */
 #include "engine/dls.h"
@@ -170,7 +170,7 @@ void msgs_midi(uint32_t status, uint32_t d1, uint32_t d2)
     synth_midi(status, d1, d2);
 }
 
-/* Temporary debug export (SPEC.adoc S5.6/0x12ec6), additive to the required
+/* Temporary debug export (active voice count), additive to the required
  * ABI; remove if a stricter export surface is desired. */
 WASM_EXPORT
 uint32_t msgs_debug_active_count(void)

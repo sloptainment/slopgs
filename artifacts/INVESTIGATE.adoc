@@ -1,0 +1,286 @@
+= INVESTIGATE — open questions and engine gaps
+
+Everything here is unresolved: driver behaviour not yet recovered, engine
+behaviour that knowingly differs from the driver, and fitted (`[F]`) values
+standing in for either. Settled facts live in `src/unit.c` as assertions.
+
+*Do not read this file whole.* `grep -n '^== ' artifacts/INVESTIGATE.adoc`
+lists every entry, one line each, prefixed with its id. Jump to one with
+`grep -n '\[#i-release-floor\]' artifacts/INVESTIGATE.adoc` and Read about
+40 lines from there. Source comments and `unit.c` TODO reasons cite these
+ids (`INVESTIGATE.adoc#i-release-floor`).
+
+Every entry has the same four fields: *Known* (what is settled, with VMAs),
+*Open* (what is not), *Settle by* (the observation that would close it),
+*Where* (code and tests). Delete an entry once it is closed; the closing
+assertion in `unit.c` is the record.
+
+Corpus baseline: *MEAN r 0.932, residual −32.48 dB*.
+
+[#i-ceiling-populations]
+== i-ceiling-populations: the per-voice gain ceiling splits the corpus (audible, 13.9 dB on one item)
+
+Known:: The ceiling (`TABLE[0]` = 4095/8192 of `0x1bfc0`, `0x18e09`) and the
+`+1200` at `0x19bcd` are both in the driver. With them, `41_sustain_decay_curve`
+sits at −37.1 dB; without the clamp it would be −51.1. Exactly its 3 notes with
+region attenuation 0 clamp. Raising the ceiling 0.75 dB recovers `41` but
+costs `27_gain_curves` 8.9 dB and `45_release_from_level` 15.8 dB, whose
+references (Sine `008:080`, region −314 hdB, velocity/CC7 127) do flat-top.
+Probe 50: slopgs's flat top sits 1.61 dB high, sub-knee levels 1.35–2.96 dB
+low. The two populations disagree by 0.7–1.1 dB, so no uniform level fixes
+both.
+Open:: Which term of the attenuation sum differs: region/wsmp attenuation
+(0 vs −314) or the velocity-table lookup at 100 vs 127.
+Settle by:: Term-by-term comparison of the engine's sum against
+`0x19b94`–`0x19c2a` on probe 50's sections.
+Where:: `voice.c` `voice_update_gain`, `atten_to_gain`; no test.
+
+[#i-release-floor]
+== i-release-floor: RELEASE_FLOOR_S has no counterpart in the driver ([F], audible)
+
+Known:: `0x197dc` sets `release = release * L / 1000` and nothing else
+(`0x19801`, `0x19815`). Removing the 60 ms floor: mean −32.48 → −32.28 dB;
+`37_rac_volume_order` −30.7 → −44.6, `sine-gate`/`sine2` ~0.8 dB better;
+`25_pan_law` +5.8, `27_gain_curves` +5.4, `45`/`46`/`40` +3.4–3.8,
+`serum_opening` +1.5 dB worse.
+Open:: What the floor compensates for. Short releases render as one linear
+segment in the driver (see <<i-segment-length>>); the engine's release is
+per-sample geometric.
+Settle by:: Implement segment-shaped release and re-run the A/B without the
+floor.
+Where:: `voice.c` `RELEASE_FLOOR_S`; unit.c TODO `S5.6 a 10 ms authored release`.
+
+[#i-segment-length]
+== i-segment-length: GAIN_SEGMENT_FRAMES is 256, the references show ~512 ([F])
+
+Known:: The mixer re-aims once per segment and ramps linearly in amplitude
+to the gain sampled at the segment end (`0x19644`, `0x19490`, `0x18fba`).
+Segment = min(next envelope change, `(rate+19)/20` = 1103 frames `0x128f9`,
+buffer end). The buffer is the caller's KS buffer (`0x181fa`), not a driver
+constant. Probes 45/46 measure ~512 frames; probe 44 implies 24–28 ms.
+Corpus sweep: 128 −31.18, 256 −31.14, 512 −30.90 dB; 512 costs `08_reverb`
++9.5 and `03_velocity` +7.1 dB.
+Open:: Why decay-dominated items regress at 512 (suspect: a chord across a
+fast geometric decay sits above the curve, so the reference's effective
+segment is finer than 23.5 ms).
+Settle by:: Per-segment comparison on `08_reverb`'s decay.
+Where:: `render.c` `GAIN_SEGMENT_FRAMES`; unit.c TODO `S6.6 ramp/envelope update cadence value`.
+
+[#i-envelope-cadence]
+== i-envelope-cadence: envelopes and top-up run per sample / per tick, not per service call ([F])
+
+Known:: `0x13054` drains due events, advances every voice once and promotes
+controllers once per call; the frame count comes from the KS descriptor
+(`0x181da`). Top-up runs once per dispatcher call (`0x12be7`). Probes 20/21
+need a top-up period ≥ 1024 frames (512 leaves 43 of 48 voices). Note-off
+lattice 0–27 ms (probe 46). `0x12860` derives per-rate constants never
+traced: `device+0x10` = rate/100 (220), `device+0x188` = rate·40/1000 (882),
+`device+0x1a0` = 20 at 22050.
+Open:: The EG state machine's own cadence and what feeds the per-call ramp
+steps; what the `0x12860` constants drive.
+Settle by:: Trace readers of `device+0x10`, `+0x188`, `+0x1a0`; trace
+`0x19644` and callees.
+Where:: `voice.c` `TOPUP_INTERVAL_FRAMES`, `voice_step_envelope`; unit.c TODOs
+`S5.4 top-up cadence value`, `S3.4.1/S3.4.2 envelope update cadence`.
+
+[#i-attack-quantize]
+== i-attack-quantize: attack is not quantized through Table C
+
+Known:: The driver's attack level is `TableC[(elapsed*1000/attack)/5]`
+(`0x18ad3`–`0x18b24`), linear in amplitude in 1/200 steps.
+`ENV_ATTACK_TABLE_C=1` implements it: mean −32.47 vs −32.48 dB, no item
+moved > 0.3 dB.
+Open:: Nothing about the driver; whether to ship it.
+Settle by:: A probe with long attacks at low rates, where the steps are
+audible.
+Where:: `voice.c` `ENV_ATTACK_TABLE_C`; unit.c TODO `S3.4.2 attack level`.
+
+[#i-bend-ramp]
+== i-bend-ramp: pitch-bend ramp duration 320 frames vs measured 448–512 ([F])
+
+Known:: A bend glides linearly over a fixed duration independent of step
+size (probe 33, 10–90% 20–24 ms for 200–4000 c). 320 frames is the optimum on
+`33_ramp` (−34.04 dB); per-rep edge timing reads 448–512. The reference's
+bend timing clusters on a 512-frame grid and is bimodal (4.2 and 16.5 ms).
+`town.mid` rises and falls glide at different rates (~2.2 vs 4.2 c/ms).
+Open:: The duration, the bimodality, the asymmetry.
+Settle by:: Re-derive both readings; `32.flac`'s alignment drifts 422 ms
+non-linearly, so do not fit against it.
+Where:: `voice.c` `RAMP_HORIZON_FRAMES`, `ramp_reaim`; no test.
+
+[#i-bankprog-lookahead]
+== i-bankprog-lookahead: Bank/Program look-ahead within a tick ([F])
+
+Known:: At one tick a note takes the last Program Change before the next
+note event of that tick (probe 40 13/13, probe 38 7/8). The driver's getter
+(`0x16c50`) adopts every pending value with key ≤ the query time, which
+does not predict this.
+Open:: The mechanism; probe 38 case F contradicts probe 40 case G on
+identical input.
+Settle by:: Re-capture both cases twice.
+Where:: `smf.c` `SMF_BANKPROG_LOOKAHEAD`; no test.
+
+[#i-lfo-inherent]
+== i-lfo-inherent: inherent (non-CC1) LFO depth is parsed but not applied
+
+Known:: Applying the `usControl=0` LFO→pitch depth costs `04_envelope`
++10.7 dB, so it is off; LFO→attenuation (46 gm.dls blocks, all `usControl=0`)
+is likewise unparsed. The reference's flute still shows ~7 c at CC1=0. The
+LFO time helper `0x153aa` uses `.rdata` 440.0 (`0x11cac`) and 2^20
+(`0x11ca8`); the oscillator code is unlocated.
+Open:: Why inherent depth is inaudible, and the ~7 c residual.
+Settle by:: Locate the oscillator (callers of `0x188b0`).
+Where:: `voice.c` `voice_lfo_cents`, `dls.c` `apply_art1`; no test.
+
+[#i-part-model]
+== i-part-model: part state is per channel, not per Part
+
+Known:: The driver keeps tuning, rhythm flag and RPN state per Part and fans
+each channel message out to every Part whose RCV CHANNEL matches (`0x13267`);
+the per-part SysEx handlers index by the address nibble (`0x13797`,
+`0x137ae`). The engine keeps state per channel and maps the nibble through
+RCV CHANNEL once. Equivalent while the map is a permutation.
+Open:: Two Parts on one channel (doubled notes) and a flag following a later
+RCV CHANNEL change are not modeled.
+Settle by:: A probe that maps two Parts to one channel.
+Where:: `synth.c` `part_to_channel`; no test.
+
+[#i-high-sustain-decay]
+== i-high-sustain-decay: high-sustain instruments decay several dB in the reference
+
+Known:: `field/onestop_extract.mid` (Atmosphere, sustain 88.2%): the reference
+falls ~6 dB over 0.7–1.4 s; the decay model predicts < 1.1 dB. Decay-to-sustain
+times land within ~2× of probes 39/41.
+Open:: The mechanism; no authored parameter predicts which instruments do it.
+Settle by:: Isolated single-note captures of high-sustain patches.
+Where:: `voice.c` `ENV_DECAY`; no test.
+
+[#i-doomdrum]
+== i-doomdrum: drum tail 4.1–5.3 dB below the reference after every hit
+
+Known:: `tests/doomdrum.mid`: a step offset established by +0.10 s, flat
+after; slopes agree to 0.51 dB/s. Dominated by note 41 (Low Floor Tom, looped,
+sustain 0); pitch matches to +2.1 c.
+Open:: Where the level goes.
+Settle by:: Solo note 41, compare the attack segment.
+Where:: no test.
+
+[#i-cc11-gating]
+== i-cc11-gating: fast CC11 gating leaves silent gaps in the reference
+
+Known:: GENERAL_SERUM measure 226 gates CC11 0/127 every 12–25 ms; the
+reference has near-silent spans of 25–90 ms, the render none.
+Open:: Whether the segment model (<<i-segment-length>>) explains it.
+Settle by:: Re-measure against the current segment model.
+Where:: no test.
+
+[#i-sysex-abi]
+== i-sysex-abi: the public ABI cannot inject SysEx
+
+Known:: `msgs_midi` carries 3 bytes; SysEx reaches `synth_sysex` only from
+SMF playback.
+Open:: Whether the fixed ABI should grow a SysEx entry point.
+Settle by:: A decision.
+Where:: `msgs.h`, `synth.h`.
+
+[#i-reset-order]
+== i-reset-order: which pending events survive the two reset orderings
+
+Known:: GM On/Off and GS Reset run ResetAllChannelControllers then
+ResetAllProgramsAndRhythmGroups (`0x137fa`); System Reset runs them the other
+way round (`0x13202`, `0x1320f`). The first cancels pending queue nodes; the
+second schedules program events.
+Open:: Which events survive each, and whether it is audible.
+Settle by:: Trace `0x1252a` against `0x12780`'s scheduling.
+Where:: `synth.c` `synth_reset`; no test.
+
+[#i-storage-policy]
+== i-storage-policy: 16-bit samples may be stored as 8-bit on a stock install (audible if so)
+
+Known:: A caller-supplied `flagByte` selects raw 16-bit, MSB-truncated 8-bit,
+or log-companded 8-bit (Table E) storage; wave `wsmp.fulOptions` can veto
+(`0x15564`–`0x15625`).
+Open:: Which path fires on a stock XP install.
+Settle by:: Compare the references' quantization floor with Table E's
+signature, or trace the `AddDevice` caller.
+Where:: `dls.c` (16-bit raw only); no test.
+
+[#i-kmixer]
+== i-kmixer: 44.1 kHz references pass through kmixer's resampler
+
+Known:: The driver outputs 22050 Hz only (`0x1a710`). kmixer's 22050→44100
+stage is a 60-tap-per-phase float32 FIR, two phases, accumulated at x87
+default precision and truncated at the store (`kmixer 0x2c0a0`, `0x2c840`).
+Zero-order hold and linear interpolation are excluded (0.23%/0.87% match).
+Open:: The tap values (filled at runtime, not static) and the rate gate.
+Settle by:: A kernel-debugger dump of the tap buffer at `0x2c0a0`.
+Where:: `src/vsti/vsti.c` models it; the engine does not.
+
+[#i-gm-off-voices]
+== i-gm-off-voices: does a sounding voice survive GM System Off
+
+Known:: GM System Off releases the collection (`0x13700`); the release is
+refcounted (`0x16066`).
+Open:: Whether a sounding voice holds a reference.
+Settle by:: Capture a held note across GM System Off.
+Where:: `synth.c` GM System Off; no test.
+
+[#i-region-lart-count]
+== i-region-lart-count: region-lart count is unreachable through the API
+
+Known:: gm.dls: 535 of 1498 regions carry their own `lart`. Pointer identity
+misclassifies 51 regions (a shared block used by one region looks private).
+Open:: Nothing about the driver; needs an `artic_is_private` flag.
+Where:: unit.c SKIP `535 of 1498 regions carry their own lart`.
+
+[#i-table-d-2pi]
+== i-table-d-2pi: Table D uses a double 2π where the driver stores float32
+
+Known:: `.rdata 0x11d18` = 6.2831854820251465. The ideal constant gives
+`t[64]` = 100; the driver 99. `tables.c` gets 99 only because `rt_sin`
+undershoots by ~6e-12. Improving `rt_sin` breaks the table.
+Settle by:: Store the float32 constant.
+Where:: `tables.c`; unit.c `S T.5`.
+
+[#i-timecent-count]
+== i-timecent-count: "552 distinct EG timecent values" does not reproduce
+
+Known:: An independent RIFF walk counts 596 under the stated reading
+(dests 0x206/0x207/0x209/0x30a/0x30b/0x30d, both lart scopes); no variant
+gives 552. The `pow` margin below is quantified over this set.
+Settle by:: Re-derive the count and the margin over the real set.
+Where:: unit.c `S3.4.1`.
+
+[#i-rtpow-margin]
+== i-rtpow-margin: rt_pow uses 91.8% of the truncation margin
+
+Known:: Margin 1,367,824 ULP ≈ 2.960e-10 relative; `rt_pow`'s worst error is
+2.717e-10. `rt_pow` cannot get less accurate; if <<i-timecent-count>> changes
+the set, recompute.
+Where:: unit.c `S3.4.1 rt_pow(2.0, tc/1200.0)'s own worst relative error`.
+
+[#i-cosmetic]
+== i-cosmetic: driver unknowns with no output consequence for gm.dls
+
+Each is unrecovered; none changes what slopgs renders today.
+
+* `region+0x28 > 0` is a hard region-selection gate (`0x1473e`); its meaning
+  is unknown (candidate: wave data ready). Matters for partly-resolved
+  collections.
+* Who copies the wave rate into `region+0x14` (`0x18f6f`); `0x1456e` has no
+  caller.
+* Where wave `fmt`/`data`/`wsmp` are finally decoded after the ptbl fixup;
+  and the region/wave wsmp merge when a region has no wsmp.
+* Whether a loop end past the decoded data is clamped.
+* `device+0xf10` (RPN select) at device-add: nothing writes it.
+* Any velocity-side reader of the linear table `0x1bfd4` (pan reads it).
+* Where promoted CC7/CC11 values become gain (the table use is asserted).
+* `articBlock+0x38`'s identity; the device object at `voice+0x104` beyond
+  `+0x0/+0x4/+0x8/+0xc/+0x18`; the `+0x118` timestamp pair.
+* Purpose of the `edit` chunk (5 sites) and of ptbl placeholder `+0x2f`;
+  `0x1469e`'s field for a wave object.
+* Why the pool splits 48+6 rather than 54 flat.
+* Whether the scalar mixer family matches MMX bit for bit (unreached).
+* Whether output spectrum varies with velocity (code says no).
+* Probe 18 measured a 70 ms choke; the bound is 315 samples = 14.29 ms
+  (`0x19834`, rate 22050 from `0x12b40`). Re-measure on an isolated choke.

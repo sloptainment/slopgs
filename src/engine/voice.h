@@ -1,5 +1,5 @@
 /* voice.h -- voice pool, allocation, stealing, key-group choke, per-voice
- * parameters, envelopes. SPEC.adoc Part 5 (pool/steal/choke) + Part 3. */
+ * parameters, envelopes. */
 #ifndef VOICE_H
 #define VOICE_H
 
@@ -31,8 +31,8 @@ _Static_assert(
     RENDER_RATE % BASE_RATE == 0 && RENDER_RATE >= BASE_RATE,
     "RESAMPLE_FACTOR must be a positive integer (internal-rate invariant)");
 
-/* 48 primary + 6 reserve, SPEC.adoc S5.2, one flat tagged pool -- SPEC_LOG item
- * 7 */
+/* 54 voice objects, 48 primary + 6 reserve (0x12a78-0x12aef), kept here as
+ * one array with a reserve tag */
 #define NUM_VOICES 54
 
 typedef enum
@@ -58,7 +58,7 @@ typedef struct Voice
     uint32_t phase_pos; /* Q12: bits31:12 index, bits11:0 fraction */
     /* Q12 per-output-sample increment; ramped towards phase_step_target one
      * sample at a time by render.c's render_voice, never written directly
-     * outside voice_note_on's snap and that ramp step, SPEC.adoc S6.6 */
+     * outside voice_note_on's snap and that ramp step (0x18fba) */
     uint32_t phase_step;
     /* bend the in-flight ramp is aimed at; LFO/EG2 changes are carried through
      * instantly instead */
@@ -68,7 +68,7 @@ typedef struct Voice
     uint32_t phase_step_target;
     /* HELD per-sample slope towards phase_step_target, in 1/256 phase_step LSBs
      * (whole LSBs too coarse below ~a semitone); sized by ramp_reaim over a
-     * fixed horizon, held until ramp_left expires, SPEC.adoc S6.6 */
+     * fixed horizon, held until ramp_left expires */
     int32_t phase_step_ramp_step;
     /* leftover 1/256ths from the slope above, carried sample to sample by
      * render_voice */
@@ -95,8 +95,7 @@ typedef struct Voice
     double gain_l, gain_r;
 
     /* frames left in this segment; 0 = re-aim. Amplitude ramp segment: envelope
-     * x gain sampled once per segment END, ramped linearly, SPEC.adoc S6.6 /
-     * `[A:0x18fba]` / SPEC_LOG item 21 */
+     * x gain sampled once per segment END, ramped linearly `[A:0x18fba]` */
     uint32_t amp_left;
     double amp_l, amp_r;           /* applied amplitude, envelope x gain */
     double amp_step_l, amp_step_r; /* per-frame increment towards the target */
@@ -106,8 +105,9 @@ typedef struct Voice
     /* live target gain, recomputed every block by voice_update_gain from
      * atten_const_hdb plus current channel vol/expr/pan/master vol */
     double gain_l_target, gain_r_target;
-    /* velocity + region/wsmp attenuation: fixed for the voice's life (SPEC.adoc
-     * S3.5/S3.10); CC-driven terms NOT baked in here, see voice_update_gain */
+    /* velocity + region/wsmp attenuation + 1200: fixed for the voice's life
+     * (0x19bb9-0x19bcd); CC-driven terms NOT baked in here, see
+     * voice_update_gain */
     int32_t atten_const_hdb;
 
     EnvStage env_stage;
@@ -119,19 +119,19 @@ typedef struct Voice
     /* ENV_ATTACK_TABLE_C only: attack segment length in samples (>=1 whenever
      * env_stage==ENV_ATTACK) */
     int32_t env_attack_samples;
-    /* SPEC.adoc S5.1.2.1: geometric per-sample ratio toward env_sustain_level,
+    /* geometric per-sample ratio toward env_sustain_level,
      * terminated exactly by env_decay_samples_left, not by this coefficient
      * asymptoting */
     double env_decay_coef;
     double env_release_coef;  /* multiplicative approach-to-zero coefficient */
     double env_sustain_level; /* 0..1 */
-    /* SPEC.adoc S5.1.2.1: exact countdown so the decay ramp snaps to
+    /* exact countdown so the decay ramp snaps to
      * env_sustain_level at the rescaled duration rather than a threshold test.
      * 0 while not in ENV_DECAY. */
     int32_t env_decay_samples_left;
 
-    /* EG2, the PITCH envelope. SPEC.adoc S2.4.3/S2.4.4 [A:0x15838]: EG2 to any
-     * destination other than PITCH is ignored */
+    /* EG2, the PITCH envelope [A:0x15838]: EG2 to any destination other than
+     * PITCH is ignored */
     EnvStage eg2_stage;
     double eg2_level;       /* 0..1 */
     double eg2_attack_step; /* linear increment per modulation block */
@@ -148,17 +148,17 @@ typedef struct Voice
     /* allocation sequence number, for oldest-first steal */
     uint32_t age;
 
-    /* SPEC.adoc S5.2/S5.3/S5.4 [A]: 1 while this voice is a FREE node tagged
+    /* 1 while this voice is a FREE node tagged
      * reserve-tier; meaningless while active==1. Recycling always clears it to
      * 0 (primary). See voice_topup_reserve. */
     int in_reserve;
-    /* SPEC.adoc S5.6 +0x138 [A]: 1 once committed to a fast release by choke,
+    /* driver voice+0x138: 1 once committed to a fast release by choke,
      * retrigger, or top-up Branch B; gates find_steal_candidate_symmetric so
      * the same voice isn't re-marked mid-drain. Cleared at voice_note_on. */
     int fast_release_committed;
 
-    /* Pitch LFO (vibrato), SPEC.adoc LFO section `[M: probe 06]`; rate/delay
-     * cached at note-on from this voice's own artic, SPEC_LOG entry 6 */
+    /* Pitch LFO (vibrato) `[M: probe 06]`; rate/delay cached at note-on from
+     * this voice's own artic */
     double lfo_phase;
     double lfo_freq_hz;
     double lfo_delay_s;
@@ -172,8 +172,8 @@ extern uint32_t g_voice_age_counter;
 void voice_pool_reset(void);
 void voice_note_on(int channel, int note, int velocity);
 
-/* SPEC.adoc S5.4: tops the reserve via Branch A (retag) then Branch B
- * (fast-release), on a wall-clock tick -- SPEC_LOG item 7 / entry 14 */
+/* TopUpReserve (0x12b6a): tops the reserve via Branch A (retag free primary
+ * nodes) then Branch B (fast-release active voices), on a wall-clock tick */
 void voice_topup_tick(uint32_t frames);
 void voice_note_off(int channel, int note);
 void voice_all_sound_off(int channel); /* CC120: bypasses sustain hold */
@@ -203,7 +203,7 @@ void voice_ramp_tick(uint32_t frames);
 void voices_advance_lfo(uint32_t frames);
 
 /* recomputes gain_l/gain_r from atten_const_hdb plus live master/CC7/CC11/CC10
- * (SPEC.adoc S3.5/S3.6/S3.10) -- the ONLY place gain is computed */
+ * -- the ONLY place gain is computed */
 void voice_update_gain(Voice *v);
 
 #endif /* VOICE_H */

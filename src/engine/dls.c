@@ -1,7 +1,11 @@
-/* dls.c -- RIFF/DLS parse of gm.dls, SPEC.adoc Part 2. Chunk walk: next =
- * cur+8+size, no odd-size padding except inside INFO lists (S2.2.1). */
-/* Internal-mechanism deviations: two-pass ptbl/wvpl resolution, eager wave
- * decode vs SPEC.adoc S2.8/S2.8.6 -- SPEC_LOG item53 */
+/* dls.c -- RIFF/DLS parse of gm.dls. Chunk walk: next = cur+8+size, no
+ * odd-size padding except inside INFO lists (0x16486, 0x1602b). Any malformed
+ * chunk aborts the whole load. */
+/* Mechanism differs from the driver without changing what gm.dls resolves to:
+ * the driver appends ptbl placeholders and fixes their offsets up into
+ * pointers when it reaches wvpl (0x1643a), decoding fmt/data/wsmp at an
+ * unlocated later point; here a two-pass offset array decodes every wave
+ * eagerly. */
 #include "dls.h"
 #include "rt.h"
 
@@ -35,7 +39,7 @@ static int fourcc_is(const uint8_t *p, char a, char b, char c, char d)
 #define WSMP_MIN_SIZE 0x14
 #define WSMP_LOOP_MIN_SIZE (WSMP_MIN_SIZE + 0x10)
 
-/* Wave-chunk contents: fmt / data / wsmp / edit (SPEC.adoc S2.3.4, S2.7) */
+/* Wave-chunk contents: fmt / data / wsmp / edit (0x153fc) */
 
 static void wave_defaults(Wave *w)
 {
@@ -74,7 +78,7 @@ static void parse_wave_contents(const uint8_t *content, uint32_t clen, Wave *w)
                 uint16_t nchan = rd_u16(cdata + 2);
                 uint32_t rate = rd_u32(cdata + 4);
                 uint16_t bps = rd_u16(cdata + 0xe);
-                if (have_fmt)
+                if (have_fmt || (bps != 8 && bps != 16))
                     parse_err = (int32_t) 0x80041389; /* duplicate fmt, D-27 */
                 else if (fmt_tag != 1)
                     parse_err = (int32_t) 0x8004138a; /* not PCM, D-26 */
@@ -97,15 +101,15 @@ static void parse_wave_contents(const uint8_t *content, uint32_t clen, Wave *w)
                 if (bits_per_sample == 16)
                 {
                     w->sample_count = (int32_t)(size / 2);
-                    /* Referenced in place, never copied (SPEC.adoc S1.5.5). */
+                    /* Referenced in place, never copied. */
                     w->samples = (int16_t *) (uintptr_t) cdata;
                 }
                 else if (bits_per_sample == 8)
                 {
                     /* Hypothetical 8-bit path (gm.dls is 495/495 16-bit,
                      * S2.7.3): converted to int16, not referenced in place --
-                     * render only implements the 16-bit fetch tap
-                     * (SPEC_LOG.adoc item12). */
+                     * render only implements the 16-bit fetch tap. Same values
+                     * as the driver's byte+0x80 then *256 (0x1554e). */
                     uint32_t n = size;
                     int16_t *buf = (int16_t *) rt_alloc(n * 2);
                     for (uint32_t i = 0; i < n; i++)
@@ -120,33 +124,28 @@ static void parse_wave_contents(const uint8_t *content, uint32_t clen, Wave *w)
         }
         else if (fourcc_is(p, 'w', 's', 'm', 'p'))
         {
-            if (size >= WSMP_MIN_SIZE)
+            /* wave scope: no loop-count limit, only room for n records, a
+             * 0x10-byte record and ulLoopType 0; record 0 is used
+             * (0x15464-0x154d7) */
+            uint32_t nloops = size >= WSMP_MIN_SIZE ? rd_u32(cdata + 0x10) : 0;
+            if (size < WSMP_MIN_SIZE ||
+                (nloops &&
+                 (size < WSMP_MIN_SIZE + 0x10 * (uint64_t) nloops ||
+                  rd_u32(cdata + 0x14) < 0x10 || rd_u32(cdata + 0x18) != 0)))
+                parse_err = (int32_t) 0x80041389;
+            else
             {
                 w->unity_note = cdata[4]; /* low byte only, S2.3.4 */
                 w->fine_tune = rd_i16(cdata + 6);
                 int32_t latten = rd_i32(cdata + 8);
                 w->attenuation_hdb =
                     (int16_t)((int32_t)(((int64_t) latten * 10) >> 16));
-                uint32_t nloops = rd_u32(cdata + 0x10);
-                if (nloops > 1)
-                    parse_err = (int32_t) 0x80041389; /* S2.2.2, D-21 */
-                else if (nloops == 0)
+                w->no_loop = nloops == 0;
+                if (nloops)
                 {
-                    w->no_loop = 1;
-                }
-                else
-                {
-                    w->no_loop = 0;
-                    if (size >= WSMP_LOOP_MIN_SIZE)
-                    {
-                        /* loop record:
-                         * cbSize(0x14)+ulLoopType(0x18)+ulStart(0x1c)+ulLength(0x20)
-                         */
-                        uint32_t lstart = rd_u32(cdata + 0x1c);
-                        uint32_t llen = rd_u32(cdata + 0x20);
-                        w->loop_start = (int32_t) lstart;
-                        w->loop_end = (int32_t)(lstart + llen);
-                    }
+                    uint32_t lstart = rd_u32(cdata + 0x1c);
+                    w->loop_start = (int32_t) lstart;
+                    w->loop_end = (int32_t) (lstart + rd_u32(cdata + 0x20));
                 }
             }
         }
@@ -155,7 +154,8 @@ static void parse_wave_contents(const uint8_t *content, uint32_t clen, Wave *w)
     }
 }
 
-/* art1 connection-block decoder, SPEC.adoc S2.4 */
+/* art1 connection-block decoder (0x157da). usTransform is never read; every
+ * connection applies linearly. */
 
 static void artic_defaults(Artic *a)
 {
@@ -166,7 +166,7 @@ static void artic_defaults(Artic *a)
         (int32_t) 0x80000000;
     a->eg2_sustain_permille = 1000;
     a->eg2_to_pitch_cents = 0;
-    /* -9600; sign/meaning per SPEC_LOG.adoc item3 (S2.5 vs S3.5) */
+    /* -9600 = FULL velocity effect: note-on scales by depth/-9600 */
     a->vel_to_atten_depth = (int16_t) 0xda80;
     a->pan_cb = 0;
     a->lfo_freq_tc = (int32_t) 0x80000000;
@@ -194,13 +194,13 @@ static void apply_art1(const uint8_t *cdata, uint32_t csize, Artic *a)
         return;
     uint32_t cb_size = rd_u32(cdata + 0);
     uint32_t n_blocks = rd_u32(cdata + 4);
-    if (cb_size < 8)
+    if (cb_size < 8 || csize != cb_size + 12 * (uint64_t) n_blocks)
     {
-        parse_err = (int32_t) 0x8004138c; /* S2.2.2, D-23 */
+        parse_err = (int32_t) 0x8004138c; /* 0x157ef, 0x15ada */
         return;
     }
-    /* SPEC.adoc S2.3.6: array unconditionally at chunk_data+8, ignoring the
-     * chunk's own declared cbSize beyond the >=8 gate. */
+    /* array unconditionally at chunk_data+8, whatever cbSize says
+     * (0x15804) */
     const uint8_t *block = cdata + 8;
     for (uint32_t i = 0; i < n_blocks; i++)
     {
@@ -283,12 +283,10 @@ static void apply_art1(const uint8_t *cdata, uint32_t csize, Artic *a)
                     a->vel_to_atten_depth = (int16_t) v;
                 }
             }
-            /* SPEC.adoc S2.4.3 Source=2: velocity->EG1 attack (27/235 gm.dls
-             * instruments carry one, SPEC_LOG.adoc item28). */
+            /* velocity->EG1 attack (27/235 gm.dls instruments) */
             else if (udest == ART_DST_EG1_ATTACKTIME)
                 a->eg1_attack_vel_tc = (int16_t)(lscale >> 16);
-            /* SPEC.adoc S2.4.3 Source=3: key-follow decay (169/235 gm.dls
-             * instruments, SPEC_LOG.adoc entry15) */
+            /* Source=3, key-follow decay: 169/235 gm.dls instruments */
         }
         else if (usrc == ART_SRC_KEYNUMBER)
         {
@@ -301,9 +299,9 @@ static void apply_art1(const uint8_t *cdata, uint32_t csize, Artic *a)
         {
             if (udest == ART_DST_PITCH)
                 a->eg2_to_pitch_cents = clamp_cents(lscale >> 16);
-            /* SPEC.adoc S2.4.3 Source=1 (LFO->PITCH), probe 06 rate/depth
-             * model; ATTENUATION (tremolo) left unparsed, out of scope
-             * (SPEC_LOG.adoc entry3/item10) */
+            /* LFO->ATTENUATION (46 gm.dls blocks, all usControl 0) is left
+             * unparsed: like the inherent pitch depth it is not heard in the
+             * references, INVESTIGATE.adoc#i-lfo-inherent */
         }
         else if (usrc == ART_SRC_LFO)
         {
@@ -314,13 +312,12 @@ static void apply_art1(const uint8_t *cdata, uint32_t csize, Artic *a)
                     a->lfo_pitch_inherent_cents = v;
                 else if (uctrl == ART_CTRL_CC1)
                     a->lfo_pitch_cc1_cents = v;
-                /* any other usControl: dropped, matches SPEC.adoc S2.4.4 (gate
-                 * only accepts 0 or 0x81). */
+                /* any other usControl: dropped (0x158e8) */
             }
         }
-        /* KEYNUMBER to any destination but the two decay rows is dropped
-         * (SPEC.adoc S2.4.3's own table; gm.dls authors nothing else).
-         * usSource==4 dropped per S2.4 (matches original's own quirk). */
+        /* KEYNUMBER to any destination but the two decay rows is dropped;
+         * usSource==4 (EG1 as a modulator) is skipped by the dispatch chain
+         * entirely (0x15821). */
     }
 }
 
@@ -338,6 +335,7 @@ static void region_defaults(Region *r)
     r->low_key = 0;
     r->high_key = 127;
     r->key_group = 0;
+    r->self_nonexclusive = 0;
     r->wave_pool_index = 0;
     r->has_own_wsmp = 0;
 }
@@ -363,6 +361,7 @@ static Region *parse_region(const uint8_t *content, uint32_t clen)
             {
                 r->low_key = cdata[0];
                 r->high_key = cdata[2];
+                r->self_nonexclusive = cdata[8] & 1;
                 r->key_group = cdata[0xa];
             }
             else
@@ -370,7 +369,14 @@ static Region *parse_region(const uint8_t *content, uint32_t clen)
         }
         else if (fourcc_is(p, 'w', 's', 'm', 'p'))
         {
-            if (size >= WSMP_MIN_SIZE)
+            /* region scope: at most one loop; ulLoopType never read
+             * (0x15b38-0x15baa) */
+            uint32_t nloops = size >= WSMP_MIN_SIZE ? rd_u32(cdata + 0x10) : 0;
+            if (size < WSMP_MIN_SIZE ||
+                (nloops && (size < WSMP_MIN_SIZE + 0x10 * (uint64_t) nloops ||
+                            nloops > 1 || rd_u32(cdata + 0x14) < 0x10)))
+                parse_err = (int32_t) 0x8004138d;
+            else
             {
                 r->has_own_wsmp = 1;
                 r->unity_note = cdata[4];
@@ -378,36 +384,23 @@ static Region *parse_region(const uint8_t *content, uint32_t clen)
                 int32_t latten = rd_i32(cdata + 8);
                 r->attenuation_hdb =
                     (int16_t)((int32_t)(((int64_t) latten * 10) >> 16));
-                uint32_t nloops = rd_u32(cdata + 0x10);
-                if (nloops == 0)
+                r->no_loop = nloops == 0;
+                if (nloops)
                 {
-                    r->no_loop = 1;
-                }
-                else
-                {
-                    r->no_loop = 0;
-                    if (size >= WSMP_LOOP_MIN_SIZE)
-                    {
-                        uint32_t lstart = rd_u32(cdata + 0x1c);
-                        uint32_t llen = rd_u32(cdata + 0x20);
-                        r->loop_start = (int32_t) lstart;
-                        r->loop_end = (int32_t)(lstart + llen);
-                    }
+                    uint32_t lstart = rd_u32(cdata + 0x1c);
+                    r->loop_start = (int32_t) lstart;
+                    r->loop_end = (int32_t) (lstart + rd_u32(cdata + 0x20));
                 }
             }
         }
         else if (fourcc_is(p, 'w', 'l', 'n', 'k'))
         {
-            if (size >= 0xc)
-            {
-                uint32_t ulchannel = rd_u32(cdata + 4);
-                if (ulchannel == WLNK_CHANNEL_LEFT)
-                {
-                    r->wave_pool_index = rd_u16(cdata + 8);
-                }
-                else
-                    parse_err = (int32_t) 0x8004138b; /* S2.2.2, D-23 */
-            }
+            if (size < 0xc)
+                parse_err = (int32_t) 0x8004138e; /* 0x15c67 */
+            else if (rd_u32(cdata + 4) != WLNK_CHANNEL_LEFT)
+                parse_err = (int32_t) 0x8004138b; /* 0x15c6e */
+            else
+                r->wave_pool_index = rd_u16(cdata + 8);
         }
         else if (fourcc_is(p, 'L', 'I', 'S', 'T'))
         {
@@ -524,8 +517,8 @@ static Instrument *parse_instrument(const uint8_t *content, uint32_t clen)
         p = cdata + size;
     }
 
-    /* SPEC.adoc S3.2.2: regions lacking their own lart adopt the instrument's
-     * shared default block. */
+    /* regions lacking their own lart adopt the instrument's shared block
+     * (0x1628d-0x162c5); with neither, the note is dropped (0x19b68) */
     if (inst_default_artic)
     {
         for (Region *r = inst->first_region; r; r = r->next)
@@ -557,7 +550,7 @@ int dls_load(const uint8_t *data, uint32_t len)
 
     const uint8_t *ptbl_offsets_raw = 0; /* the file's raw ulOffset[] array */
     uint32_t ptbl_cues = 0;
-    /* per SPEC.adoc S2.8.3: wvpl chunk data + 4 */
+    /* wvpl chunk data + 4: ptbl offsets are relative to it (0x1643a) */
     const uint8_t *wvpl_data_base = 0;
     uint32_t wvpl_data_size = 0;
     Instrument *inst_tail = 0;
@@ -584,7 +577,7 @@ int dls_load(const uint8_t *data, uint32_t len)
                 else if (arr <= end)
                 {
                     /* array runs past end mid-array: take as many cues as fit,
-                     * silently (SPEC.adoc S2.2.2's stated non-error case). */
+                     * silently (0x15d60) */
                     ptbl_offsets_raw = arr;
                     ptbl_cues = (uint32_t)((end - arr) / 4);
                 }
@@ -628,8 +621,7 @@ int dls_load(const uint8_t *data, uint32_t len)
             if (size < 4)
                 parse_err = (int32_t) 0x80041392; /* S2.2.2, D-23 */
         }
-        /* vers, msyn, edit: parsed off, size-validated leniently -- SPEC_LOG
-         * item53 */
+        /* vers, msyn, edit, INFO: skipped */
         p = cdata + size;
     }
 
@@ -637,8 +629,8 @@ int dls_load(const uint8_t *data, uint32_t len)
     if (parse_err)
         return (int) parse_err;
 
-    /* Post-pass mirrors SPEC.adoc S2.8.4's own post-pass (0x15dde); see file
-     * header for the mechanism deviation. */
+    /* Post-pass: resolve each region's wave via wlnk.ulTableIndex (0x15dde);
+     * see the file header for the mechanism difference. */
     if (ptbl_offsets_raw && wvpl_data_base && ptbl_cues > 0)
     {
         Wave **arr = (Wave **) rt_alloc(ptbl_cues * sizeof(Wave *));
@@ -678,9 +670,9 @@ int dls_load(const uint8_t *data, uint32_t len)
                 {
                     r->wave = g_dls.wave_array[r->wave_pool_index];
                 }
-                /* DLS-1 wsmp inheritance fallback, [O], never exercised by
-                 * gm.dls (1498 regions each carry their own wsmp) -- SPEC_LOG
-                 * item53 */
+                /* DLS-1 wsmp inheritance: never exercised by gm.dls (all 1498
+                 * regions carry their own wsmp); the driver's merge is
+                 * unlocated */
                 if (!r->has_own_wsmp && r->wave)
                 {
                     r->unity_note = r->wave->unity_note;
@@ -696,7 +688,7 @@ int dls_load(const uint8_t *data, uint32_t len)
     return -2;
 }
 
-/* Instrument/region lookup, SPEC.adoc S3.1 */
+/* Instrument/region lookup */
 
 static Region *find_region_for_note(Instrument *inst, uint8_t note)
 {
@@ -708,8 +700,9 @@ static Region *find_region_for_note(Instrument *inst, uint8_t note)
     return 0;
 }
 
-/* Key-range walk is part of FindInstrument itself [A:0x147b7]; gm.dls SFX kit
- * (program 56) example -- SPEC_LOG item53 */
+/* The key-range walk is part of FindInstrument itself [A:0x147b7]: a kit with
+ * a hole in its key map (gm.dls's SFX kit, 39-84) falls through to the next
+ * tier for a missing key instead of dropping the note. */
 static Instrument *find_instrument_exact(uint32_t locale, uint8_t note)
 {
     for (Instrument *inst = g_dls.first_instrument; inst; inst = inst->next)
@@ -721,7 +714,7 @@ static Instrument *find_instrument_exact(uint32_t locale, uint8_t note)
     return 0;
 }
 
-Region *dls_find_region(uint32_t locale, uint8_t note)
+Region *dls_find_region(uint32_t locale, uint8_t note, uint32_t *resolved)
 {
     if (!g_dls.valid)
         return 0;
@@ -746,5 +739,7 @@ Region *dls_find_region(uint32_t locale, uint8_t note)
     Region *r = find_region_for_note(inst, note);
     if (!r || !r->artic || !r->wave)
         return 0;
+    if (resolved)
+        *resolved = locale;
     return r;
 }

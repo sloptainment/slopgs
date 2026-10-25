@@ -8,7 +8,7 @@
 This document describes the MIDI behavior of the `slopgs` MIDI implementation,
 an emulation of the Microsoft GS Wavetable Synth.
 
-Updates along with `SPEC.adoc`.
+Updates along with `src/unit.c`.
 
 
 [#s4]
@@ -248,6 +248,9 @@ Recognized. Switches the channel to mono and **releases** every
 currently-sounding note on it (implicit all-notes-off, per the MIDI spec),
 bypassing a held sustain pedal exactly as All Sound Off does.
 +
+While a channel is mono, each new Note On first releases every note still
+held on that channel, again ignoring the sustain pedal. Notes do not glide.
++
 `mm` (requested mono voice count) is **ignored** — the value sent changes
 nothing.
 
@@ -368,32 +371,25 @@ The addresses listed below are DT1 addresses, to be filled in the
 | `40 1n 02`
 | RCV CHANNEL (GS Mode)
 | Remaps which incoming channel Part `n` listens to. Persists until a Reset.
+Values count from 1: `01`–`10` select MIDI channels 1–16, one higher than
+Roland's own numbering; `00` is ignored.
 | `40 1n 15`
 | USE RHYTHM PART (GS Mode)
 | Nonzero = Part `n` switches to drum-kit ("rhythm") mode.
 
 **Also fires a Reset All Controllers on every channel** — all notes cut,
 controllers back to defaults. Bank/Program survive.
-// The retuning behavior below is confirmed for the hardware this chart
-// describes, but slopgs does not implement the twelve-entry grid yet
-// (synth.c: "No 12-entry-per-part GS Scale Tuning grid"). Held back so the
-// chart does not promise a musician something the synth ignores; restore it
-// over the "Recognized." cell once the engine implements Scale Tuning.
-//
-// | Recognized, and it actually retunes the Part: each of the twelve values
-// shifts every note of that semitone class (C, C♯, D, …) on that Part by a
-// signed number of cents equal to the received value minus `40` (one cent per
-// step, so `40` = no change, roughly −64…+63 cents). **Latched at Note On**,
-// exactly like Fine Tuning — changing it does not retune a note already
-// sounding. Twelve data bytes are consumed, always starting at semitone
-// class C.
 | `40 1n 40`
 | Scale Tuning
 
 One signed offset per semitone class (C…B), centred on `40`, stored per Part `n`
-| Recognized but **not applied — no audible retune**. This single address
-carries all twelve semitone offsets as its twelve data bytes, always starting
-at semitone class C; they are parsed and discarded. No other address in
+| Recognized, and it retunes the Part: each of the twelve values shifts every
+note of that semitone class (C, C♯, D, …) by the received value minus `40`
+cents (`40` = no change, roughly −64…+63 cents), drum Parts included.
+**Latched at Note On**, exactly like Fine Tuning — a note already sounding
+keeps its pitch. The twelve data bytes always start at semitone class C. A
+message cut short by `F7` stops one value early: the value just before the
+`F7` is not stored, and the earlier ones are kept. No other address in
 `41`–`4B` is recognized.
 | `40 1n` _any other_
 | Anything else in Roland's Patch-parameter address space for Part `n` (Reverb/Chorus Macro, Part Level, Pan, Pitch Key Shift, Velocity Sense, …)
@@ -770,6 +766,10 @@ These mappings can be changed via the Roland SysEx RCV CHANNEL and USE RHYTHM PA
 An automatic accelerated-release policy engages from the **49th simultaneous
 voice** — not at 54 — freeing voices faster than a plain steal-oldest policy
 would.
+
+Striking a key that is still sounding on the same channel, held or already
+releasing, cuts the earlier note the same way — except on the patches the
+sample collection marks as allowed to overlap themselves, where both ring.
 
 A voice cut this way, or cut by a drum kit's exclusive-key group,
 reaches silence within 14.29 ms of the cut however long its patch's own
