@@ -128,7 +128,9 @@ Known:: Applying the `usControl=0` LFO→pitch depth costs `04_envelope`
 is likewise unparsed. The reference's flute still shows ~7 c at CC1=0. The
 LFO time helper `0x153aa` uses `.rdata` 440.0 (`0x11cac`) and 2^20
 (`0x11ca8`); the oscillator code is unlocated.
-Open:: Why inherent depth is inaudible, and the ~7 c residual.
+Open:: Why inherent depth is inaudible, and the ~7 c residual. Whether the
+driver applies inherent LFO→pitch at all, and whether it applies
+LFO→attenuation (tremolo) at all; no disassembly evidence either way.
 Settle by:: Locate the oscillator (callers of `0x188b0`).
 Where:: `voice.c` `voice_lfo_cents`, `dls.c` `apply_art1`; no test.
 
