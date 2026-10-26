@@ -236,7 +236,7 @@ static void next_source(VstiInstance *vi, int16_t *l, int16_t *r)
 
 /* sin(pi*y)/(pi*y), exact at the zeros. rt_sin(pi*m) for integer m is only
  * near zero, and the phase-0 row has to be exactly a unit impulse or the
- * plugin stops being a pass-through at BASE_RATE (test 18). */
+ * plugin stops being a pass-through at RENDER_RATE (test 18). */
 static double sinc_pi(double y)
 {
     if (y == 0.0)
@@ -251,7 +251,7 @@ static float g_filter[VSTI_PHASES][VSTI_TAPS];
 static double g_filter_cutoff = -1.0;
 
 /* cutoff is in units of the source Nyquist: 1.0 when the host runs at or
- * above BASE_RATE (the source band is the limit), lower when it runs below
+ * above RENDER_RATE (the source band is the limit), lower when it runs below
  * (the output band is, and passing the difference through would alias). */
 static void build_filter(double cutoff)
 {
@@ -284,22 +284,23 @@ static void build_filter(double cutoff)
 }
 
 /* cutoff is 1.0 (the source band is the limit) unless the host runs below
- * BASE_RATE, where the output band is and passing the difference through
+ * RENDER_RATE, where the output band is and passing the difference through
  * would alias. Called from the dispatcher, never from the render path: the
  * table is 65536 coefficients and three sines each, which is nothing at
  * setup and far too much inside processReplacing. */
 static void build_filter_for(float rate)
 {
-    build_filter(rate < (float) BASE_RATE ? (double) rate / (double) BASE_RATE
-                                          : 1.0);
+    build_filter(rate < (float) RENDER_RATE
+                     ? (double) rate / (double) RENDER_RATE
+                     : 1.0);
 }
 
-/* Resamples the engine's fixed BASE_RATE stream to vi->sample_rate, 64-bit
- * Q32.32 phase accumulator (RESAMPLE_FACTOR stays 1, voice.h). */
+/* Resamples the engine's fixed RENDER_RATE stream to vi->sample_rate, 64-bit
+ * Q32.32 phase accumulator. */
 static void vsti_resample(VstiInstance *vi, float *out_l, float *out_r,
                           uint32_t n)
 {
-    uint64_t step = ((uint64_t) BASE_RATE << 32) / (uint64_t) vi->sample_rate;
+    uint64_t step = ((uint64_t) RENDER_RATE << 32) / (uint64_t) vi->sample_rate;
     uint64_t acc = vi->resamp_acc;
 
     for (uint32_t i = 0; i < n; i++)
@@ -386,7 +387,7 @@ static int32_t vsti_process_events(VstiInstance *vi, void *ptr)
         uint32_t rate = vi->sample_rate > 1.0f ? (uint32_t) vi->sample_rate
                                                : VSTI_DEFAULT_RATE;
         q->engine_frame =
-            (g_out_pos + (uint64_t) d) * BASE_RATE / (uint64_t) rate;
+            (g_out_pos + (uint64_t) d) * RENDER_RATE / (uint64_t) rate;
     }
     return 1;
 }

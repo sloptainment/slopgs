@@ -266,15 +266,17 @@ static int32_t voice_step_eg2(Voice *v)
 /* LFO output [A:0x18992],[A:0x189e4]: (CC1*cc1_depth/127 + inherent) *
  * sine/100, integer; cents for pitch, hdB for attenuation. 0 until the delay
  * has elapsed, then Table D index ((elapsed - delay) * step >> 12) & 255
- * [A:0x1891e]. */
+ * [A:0x1891e]. step and delay are in BASE_RATE frames, elapsed in
+ * RENDER_RATE frames. */
 static int32_t voice_lfo(Voice *v, int32_t cc1_depth, int32_t inherent)
 {
-    if (v->lfo_elapsed < v->artic->lfo_delay_frames)
+    uint64_t delay = (uint64_t) v->artic->lfo_delay_frames * RESAMPLE_FACTOR;
+    if (v->lfo_elapsed < delay)
         return 0;
     int32_t depth =
         g_channels[v->channel].modulation * cc1_depth / 127 + inherent;
-    uint64_t t = v->lfo_elapsed - v->artic->lfo_delay_frames;
-    int idx = (int) ((t * v->artic->lfo_step) >> 12) & 255;
+    uint64_t t = v->lfo_elapsed - delay;
+    int idx = (int) ((t * v->artic->lfo_step / RESAMPLE_FACTOR) >> 12) & 255;
     return depth * g_table_sine[idx] / 100;
 }
 
