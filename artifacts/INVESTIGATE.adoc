@@ -120,20 +120,6 @@ identical input.
 Settle by:: Re-capture both cases twice.
 Where:: `smf.c` `SMF_BANKPROG_LOOKAHEAD`; no test.
 
-[#i-lfo-inherent]
-== i-lfo-inherent: inherent (non-CC1) LFO depth is parsed but not applied
-
-Known:: Applying the `usControl=0` LFO→pitch depth costs `04_envelope`
-+10.7 dB, so it is off; LFO→attenuation (46 gm.dls blocks, all `usControl=0`)
-is likewise unparsed. The reference's flute still shows ~7 c at CC1=0. The
-LFO time helper `0x153aa` uses `.rdata` 440.0 (`0x11cac`) and 2^20
-(`0x11ca8`); the oscillator code is unlocated.
-Open:: Why inherent depth is inaudible, and the ~7 c residual. Whether the
-driver applies inherent LFO→pitch at all, and whether it applies
-LFO→attenuation (tremolo) at all; no disassembly evidence either way.
-Settle by:: Locate the oscillator (callers of `0x188b0`).
-Where:: `voice.c` `voice_lfo_cents`, `dls.c` `apply_art1`; no test.
-
 [#i-part-model]
 == i-part-model: part state is per channel, not per Part
 

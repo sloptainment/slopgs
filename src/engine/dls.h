@@ -88,6 +88,9 @@ typedef struct Artic
     /* src=LFO,ctrl=CC1 -> PITCH: CC1-scaled pitch-LFO depth, same formula/clamp
      */
     int16_t lfo_pitch_cc1_cents;
+    /* src=LFO,ctrl=NONE/CC1 -> ATTENUATION: tremolo depth, lScale*10>>16 (hdB),
+     * clamped +-1200 */
+    int16_t lfo_atten_inherent_hdb, lfo_atten_cc1_hdb;
     /* src=KEYONVELOCITY -> EG1_ATTACKTIME: velocity attack scaling, hi word of
      * lScale, full-scale (vel 127) cent offset */
     int16_t eg1_attack_vel_tc;

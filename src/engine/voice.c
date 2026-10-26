@@ -277,18 +277,22 @@ static int32_t voice_step_eg2(Voice *v)
     return (int32_t) c;
 }
 
+/* LFO output [A:0x18992],[A:0x189e4]: (CC1*cc1_depth/127 + inherent) *
+ * sine/100, integer; cents for pitch, hdB for attenuation */
+static int32_t voice_lfo(Voice *v, int32_t cc1_depth, int32_t inherent)
+{
+    int32_t depth =
+        g_channels[v->channel].modulation * cc1_depth / 127 + inherent;
+    int idx = ((int) (v->lfo_phase * 256.0)) & 255;
+    return depth * g_table_sine[idx] / 100;
+}
+
 static int32_t voice_lfo_cents(Voice *v)
 {
     if (!v->artic)
         return 0;
-    int32_t cc1_depth = v->artic->lfo_pitch_cc1_cents;
-    if (cc1_depth == 0)
-        return 0;
-    double cc1 = (double) g_channels[v->channel].modulation / 127.0;
-    double depth_cents = (double) cc1_depth * cc1;
-    int idx = ((int) (v->lfo_phase * 256.0)) & 255;
-    double lfo_unit = (double) g_table_sine[idx] / 100.0;
-    return (int32_t)(depth_cents * lfo_unit);
+    return voice_lfo(v, v->artic->lfo_pitch_cc1_cents,
+                     v->artic->lfo_pitch_inherent_cents);
 }
 
 /* [F] RAMP_HORIZON_FRAMES=320 (14.5 ms): a bend glides linearly over a fixed
@@ -428,7 +432,10 @@ void voice_update_gain(Voice *v)
         return;
     int32_t chan_vol = g_table_vel[g_channels[v->channel].volume];
     int32_t expr = g_table_vel[g_channels[v->channel].expression];
-    int32_t atten_hdb = g_master_vol_hdb + chan_vol + expr + v->atten_const_hdb;
+    int32_t atten_hdb = g_master_vol_hdb + chan_vol + expr +
+                        v->atten_const_hdb +
+                        voice_lfo(v, v->artic->lfo_atten_cc1_hdb,
+                                  v->artic->lfo_atten_inherent_hdb);
 
     int pan = (int) g_channels[v->channel].pan + v->artic->pan_cb;
     if (pan < 0)

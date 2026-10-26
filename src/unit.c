@@ -3673,6 +3673,61 @@ static void t_findings_live(void)
         synth_construct();
     }
 
+    tap_diag("--- LFO depth is CC1*ccDepth/127 + inherent, times sine/100, for "
+             "both pitch [A:0x189e4] and attenuation [A:0x18992] ---");
+    {
+        synth_construct();
+        int ch = 3;
+        static Wave w;
+        w.sample_rate = 22050;
+        Voice *v = &g_voices[0];
+        vo_setup_bare_active(v, ch, 60);
+        v->wave = &w;
+        v->base_ratio_q12 = 4096;
+        v->atten_const_hdb = -3000;
+        /* Table D index 32: trunc(100*sin(pi/4)) = 70 */
+        v->lfo_phase = 32.0 / 256.0;
+        v->artic->lfo_pitch_cc1_cents = 1000;
+        v->artic->lfo_pitch_inherent_cents = 100;
+        v->artic->lfo_atten_cc1_hdb = -1000;
+        v->artic->lfo_atten_inherent_hdb = -100;
+        synth_midi(0xB0 | ch, 1, 64);
+        synth_midi(0xB0 | ch, 10, 64);
+        /* (64*1000/127 + 100) * 70 / 100 = 422 */
+        int32_t lfo = (64 * 1000 / 127 + 100) * g_table_sine[32] / 100;
+        voice_update_pitch(v);
+        uint64_t raw = ((uint64_t) 22050 * 4096u *
+                        (uint64_t) vo_cents_to_ratio_q12(lfo)) >>
+                       12;
+        is_int(v->phase_step_target, (uint32_t) (raw / RENDER_RATE),
+               "LFO->pitch adds the inherent depth to the CC1-scaled depth "
+               "[A:0x189e4]");
+        voice_update_gain(v);
+        int32_t sum = v->atten_const_hdb + g_table_vel[100] + g_table_vel[127] +
+                      g_table_lin[63] - lfo;
+        is_near(v->gain_l_target,
+                (double) g_table_dbamp[sum / 10 + 1000] / 8192.0, 1e-12,
+                "LFO->attenuation (tremolo) adds into the attenuation sum "
+                "[A:0x194eb]");
+        /* a negative depth pins truncation: (64*-1000/127) * 99 / 100 = -497;
+           rounding down gives -499, double math -498 */
+        v->artic->lfo_pitch_cc1_cents = -1000;
+        v->artic->lfo_pitch_inherent_cents = 0;
+        v->lfo_phase = 60.0 / 256.0;
+        lfo = 64 * -1000 / 127 * g_table_sine[60] / 100;
+        voice_update_pitch(v);
+        raw = ((uint64_t) 22050 * 4096u *
+               (uint64_t) vo_cents_to_ratio_q12(lfo)) >>
+              12;
+        is_int(v->phase_step_target, (uint32_t) (raw / RENDER_RATE),
+               "LFO->pitch truncates toward zero at both divisions (idiv) "
+               "[A:0x189e4]");
+        v->artic->lfo_pitch_cc1_cents = v->artic->lfo_pitch_inherent_cents = 0;
+        v->artic->lfo_atten_cc1_hdb = v->artic->lfo_atten_inherent_hdb = 0;
+        voice_pool_reset();
+        synth_construct();
+    }
+
     tap_diag("--- S3.6: pan law, one table read forward and reversed "
              "[A:0x19bfe]-[A:0x19c2a] ---");
     {
@@ -4148,6 +4203,30 @@ static void t_findings_dls(void)
         ok(a && a->vel_to_atten_depth == -9600,
            "S2.4.2 velocity->attenuation lScale INT32_MIN maps to -9600 "
            "[A:0x158a4]");
+    }
+
+    tap_diag("--- S2.4.3: LFO->attenuation is parsed for usControl 0 and CC1 "
+             "[A:0x158e4] ---");
+    {
+        static const dlx_conn c[2] = {
+            {1, 0, ART_DST_ATTENUATION, 0, -(60 << 16) - 1},
+            {1, ART_CTRL_CC1, ART_DST_ATTENUATION, 0, 200 << 16},
+        };
+        int rc = dlx_load_one(0, c, 2, 0);
+        Region *r = dlx_region0();
+        Artic *a = r ? r->artic : 0;
+        ok(rc == 0 && a && a->lfo_atten_inherent_hdb == -601,
+           "S2.4.3 LFO->attenuation, usControl 0: lScale*10>>16 (sar, rounds "
+           "down) into art+0x54 [A:0x15975]");
+        ok(a && a->lfo_atten_cc1_hdb == 1200,
+           "S2.4.3 LFO->attenuation, CC1: same scale into art+0x50, clamped "
+           "to +-1200 [A:0x1590b]");
+        static const dlx_conn lo[1] = {
+            {1, 0, ART_DST_ATTENUATION, 0, -200 << 16}};
+        rc = dlx_load_one(0, lo, 1, 0);
+        r = dlx_region0();
+        ok(rc == 0 && r && r->artic->lfo_atten_inherent_hdb == -1200,
+           "S2.4.3 LFO->attenuation clamps below at -1200 [A:0x15926]");
     }
 
     tap_diag("--- S3.2: a region with no lart at either scope never sounds "

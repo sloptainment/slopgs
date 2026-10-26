@@ -173,6 +173,8 @@ static void artic_defaults(Artic *a)
     a->lfo_delay_tc = (int32_t) 0x80000000;
     a->lfo_pitch_inherent_cents = 0;
     a->lfo_pitch_cc1_cents = 0;
+    a->lfo_atten_inherent_hdb = 0;
+    a->lfo_atten_cc1_hdb = 0;
     a->eg1_attack_vel_tc = 0;
     a->eg1_decay_kf_tc = 0;
     a->eg2_decay_kf_tc = 0;
@@ -299,9 +301,6 @@ static void apply_art1(const uint8_t *cdata, uint32_t csize, Artic *a)
         {
             if (udest == ART_DST_PITCH)
                 a->eg2_to_pitch_cents = clamp_cents(lscale >> 16);
-            /* LFO->ATTENUATION (46 gm.dls blocks, all usControl 0) is left
-             * unparsed: like the inherent pitch depth it is not heard in the
-             * references, INVESTIGATE.adoc#i-lfo-inherent */
         }
         else if (usrc == ART_SRC_LFO)
         {
@@ -313,6 +312,16 @@ static void apply_art1(const uint8_t *cdata, uint32_t csize, Artic *a)
                 else if (uctrl == ART_CTRL_CC1)
                     a->lfo_pitch_cc1_cents = v;
                 /* any other usControl: dropped (0x158e8) */
+            }
+            else if (udest == ART_DST_ATTENUATION)
+            {
+                /* hdB, same +-1200 clamp as pitch (0x1590e) */
+                int16_t v =
+                    clamp_cents((int32_t) (((int64_t) lscale * 10) >> 16));
+                if (uctrl == ART_CTRL_NONE)
+                    a->lfo_atten_inherent_hdb = v;
+                else if (uctrl == ART_CTRL_CC1)
+                    a->lfo_atten_cc1_hdb = v;
             }
         }
         /* KEYNUMBER to any destination but the two decay rows is dropped;
