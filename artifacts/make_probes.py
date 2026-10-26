@@ -3070,6 +3070,39 @@ def p50_gain_ceiling():
     return _write_manifest("50_gain_ceiling.mid", tr, man)
 
 
+def p51_lfo_tremolo():
+    """Inherent LFO: tremolo and vibrato with the mod wheel at 0.
+
+    gm.dls gives 34 melodic patches an LFO->attenuation depth with usControl 0
+    (no controller), and most also an inherent LFO->pitch depth. The driver
+    applies both (0x18992, 0x189e4): depth = CC1*ccDepth/127 + inherent, times
+    sine/100, the LFO starting after its delay at its authored rate. Each case
+    holds one note 4 s at CC1=0; the last repeats case A at CC1=127, where only
+    the CC1->pitch depth (47 c on every patch) should grow, not the tremolo.
+
+      A  044 Tremolo Str   1.70 dB  8 c  10.0 Hz  delay 0.133 s
+      B  011 Vibraphone    1.50 dB  0 c   5.2 Hz  delay 0.016 s (decays)
+      C  077 Shakuhachi    0.35 dB 18 c   5.6 Hz  delay 0.600 s
+      D  073 Flute        -0.40 dB  5 c   6.0 Hz  delay 0.480 s (negative)
+      E  043 Contrabass   -0.17 dB  9 c   6.0 Hz  delay 0.483 s (negative)
+      F  044 Tremolo Str as A, CC1=127
+    """
+    tr = Track()
+    man = ["# 51_lfo_tremolo.mid",
+           "# onset_s\toff_s\tcase\tprogram\tcc1"]
+    clock = 0
+    for case, prog, cc1 in (("A", 44, 0), ("B", 11, 0), ("C", 77, 0),
+                            ("D", 73, 0), ("E", 43, 0), ("F", 44, 127)):
+        tr.prog(clock, 0, prog)
+        tr.cc(clock, 0, 1, cc1)
+        tr.note(clock + t(0.1), t(4.0), 0, 60, 100)
+        man.append(f"{clock / TPS + 0.1:.3f}\t{clock / TPS + 4.1:.3f}\t"
+                   f"{case}\t{prog}\t{cc1}")
+        clock += t(5.5)
+    tr.cc(clock, 0, 1, 0)
+    return _write_manifest("51_lfo_tremolo.mid", tr, man)
+
+
 PROBES = [p01_programs, p02_keyrange, p03_velocity, p04_envelope, p05_pitchbend,
           p06_modwheel, p07_pan_volume, p08_reverb, p09_chorus, p10_polyphony,
           p11_drums, p12_gs_sysex, p13_edge, p14_running_status,
@@ -3083,7 +3116,7 @@ PROBES = [p01_programs, p02_keyrange, p03_velocity, p04_envelope, p05_pitchbend,
           p41_sustain_decay_curve, p42_multitrack_same_tick, p43_level_vs_pitch,
           p44_release_shape, p45_release_from_level, p46_noteoff_grid,
           p47_gm_off_state, p48_rhythm_part_reset, p49_gm_off_during_note,
-          p50_gain_ceiling]
+          p50_gain_ceiling, p51_lfo_tremolo]
 
 
 def check(path):

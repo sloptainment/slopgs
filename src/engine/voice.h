@@ -157,13 +157,8 @@ typedef struct Voice
      * the same voice isn't re-marked mid-drain. Cleared at voice_note_on. */
     int fast_release_committed;
 
-    /* Pitch LFO (vibrato) `[M: probe 06]`; rate/delay cached at note-on from
-     * this voice's own artic */
-    double lfo_phase;
-    double lfo_freq_hz;
-    double lfo_delay_s;
-    /* seconds since note-on; phase stays 0 until this exceeds lfo_delay_s */
-    double lfo_elapsed_s;
+    /* LFO clock: frames since note-on (0x1891e) */
+    uint64_t lfo_elapsed;
 } Voice;
 
 extern Voice g_voices[NUM_VOICES];

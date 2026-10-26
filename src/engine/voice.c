@@ -60,10 +60,7 @@ void voice_pool_reset(void)
         v->held = 0;
         v->sustain_deferred = 0;
         v->age = 0;
-        v->lfo_phase = 0.0;
-        v->lfo_freq_hz = 0.0;
-        v->lfo_delay_s = 0.0;
-        v->lfo_elapsed_s = 0.0;
+        v->lfo_elapsed = 0;
         /* which indices start as reserve is cosmetic: nothing distinguishes
          * tier once active, and Branch A retags nodes over time */
         v->in_reserve = (i >= NUM_PRIMARY) ? 1 : 0;
@@ -126,17 +123,6 @@ static int32_t scale_tc_by_source(int32_t tc, int16_t depth, int src)
     if (cents < -4800)
         cents = -4800;
     return tc + cents * 65536;
-}
-
-/* LFO rate [M: probe 06]: freq = 8.176 * 2^(tc/1200) per instrument; strings
- * and flute both carry -35106105 -> 6.0001 Hz against a measured 5.98 Hz. The
- * driver's own oscillator code is unlocated. */
-static double lfo_freq_from_tc(int32_t tc)
-{
-    if (tc == (int32_t) 0x80000000)
-        return 8.176;
-    double t = (double) tc / 65536.0;
-    return 8.176 * rt_pow(2.0, t / 1200.0);
 }
 
 /* exp_coef: release traverses the 96 dB scale in the authored time.
@@ -278,12 +264,17 @@ static int32_t voice_step_eg2(Voice *v)
 }
 
 /* LFO output [A:0x18992],[A:0x189e4]: (CC1*cc1_depth/127 + inherent) *
- * sine/100, integer; cents for pitch, hdB for attenuation */
+ * sine/100, integer; cents for pitch, hdB for attenuation. 0 until the delay
+ * has elapsed, then Table D index ((elapsed - delay) * step >> 12) & 255
+ * [A:0x1891e]. */
 static int32_t voice_lfo(Voice *v, int32_t cc1_depth, int32_t inherent)
 {
+    if (v->lfo_elapsed < v->artic->lfo_delay_frames)
+        return 0;
     int32_t depth =
         g_channels[v->channel].modulation * cc1_depth / 127 + inherent;
-    int idx = ((int) (v->lfo_phase * 256.0)) & 255;
+    uint64_t t = v->lfo_elapsed - v->artic->lfo_delay_frames;
+    int idx = (int) ((t * v->artic->lfo_step) >> 12) & 255;
     return depth * g_table_sine[idx] / 100;
 }
 
@@ -356,7 +347,7 @@ void voice_update_pitch(Voice *v)
      * bend/LFO/EG2 (clamped separately), the live delta from 0x195a2 */
     int32_t bend_cents = synth_pitch_bend_cents(v->channel);
     int32_t mod_cents = bend_cents
-                        /* `[M: probe 06]` */
+                        /* `[A:0x189e4]` */
                         + voice_lfo_cents(v)
                         /* `[A:0x15838]` */
                         + voice_step_eg2(v);
@@ -385,23 +376,14 @@ void voice_update_pitch(Voice *v)
         ramp_reaim(v, RAMP_HORIZON_FRAMES);
 }
 
-/* Per-voice LFO phase advance [M: probe 06]; sub-chunked so a held note with
- * no MIDI traffic still oscillates */
+/* Per-voice LFO clock; sub-chunked so a held note with no MIDI traffic still
+ * oscillates */
 void voices_advance_lfo(uint32_t frames)
 {
-    double dt = (double) frames / (double) RENDER_RATE;
     for (int i = 0; i < NUM_VOICES; i++)
     {
-        Voice *v = &g_voices[i];
-        if (!v->active)
-            continue;
-        v->lfo_elapsed_s += dt;
-        /* still in start-delay: phase frozen at 0 */
-        if (v->lfo_elapsed_s <= v->lfo_delay_s)
-            continue;
-        v->lfo_phase += v->lfo_freq_hz * dt;
-        /* wrap to [0,1); phase is always >= 0 */
-        v->lfo_phase -= (double) (int64_t) v->lfo_phase;
+        if (g_voices[i].active)
+            g_voices[i].lfo_elapsed += frames;
     }
 }
 
@@ -733,13 +715,9 @@ void voice_note_on(int channel, int note, int velocity)
      */
     v->base_ratio_q12 = (uint32_t) cents_to_ratio_q12(v->base_cents);
 
-    /* Pitch-LFO state `[M: probe 06]`: rate/delay cached
-     * once from this voice's own artic; phase starts at 0, advanced only by
-     * voices_advance_lfo. */
-    v->lfo_phase = 0.0;
-    v->lfo_elapsed_s = 0.0;
-    v->lfo_freq_hz = lfo_freq_from_tc(r->artic->lfo_freq_tc);
-    v->lfo_delay_s = timecents_to_seconds(r->artic->lfo_delay_tc);
+    /* LFO clock starts at note-on (0x19c48); advanced only by
+     * voices_advance_lfo */
+    v->lfo_elapsed = 0;
 
     voice_update_pitch(v);
     /* New note: plays at the true target from sample 0, no glide-in from

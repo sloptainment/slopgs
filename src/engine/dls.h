@@ -79,9 +79,10 @@ typedef struct Artic
     int16_t vel_to_atten_depth;
     /* dest=ART_DST_PAN_COARSE/ART_DST_PAN, small correction to CC10 pan */
     int16_t pan_cb;
-    /* src=ART_SRC_NONE -> dest=ART_DST_LFO_FREQUENCY/ART_DST_LFO_DELAY,
-     * timecents */
-    int32_t lfo_freq_tc, lfo_delay_tc;
+    /* src=ART_SRC_NONE -> dest=ART_DST_LFO_FREQUENCY/ART_DST_LFO_DELAY
+     * (art+0x40/+0x48): per-sample phase step (Hz*2^20/22050) and delay in
+     * frames, both truncated at parse; default 5 Hz, no delay */
+    uint32_t lfo_step, lfo_delay_frames;
     /* src=LFO,ctrl=NONE -> PITCH: ungated pitch-LFO depth, hi word of lScale,
      * clamped +-1200 */
     int16_t lfo_pitch_inherent_cents;

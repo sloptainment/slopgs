@@ -169,8 +169,9 @@ static void artic_defaults(Artic *a)
     /* -9600 = FULL velocity effect: note-on scales by depth/-9600 */
     a->vel_to_atten_depth = (int16_t) 0xda80;
     a->pan_cb = 0;
-    a->lfo_freq_tc = (int32_t) 0x80000000;
-    a->lfo_delay_tc = (int32_t) 0x80000000;
+    /* 0x14176: 5 Hz at the device rate, 22050 (0x14498) */
+    a->lfo_step = 0x500000 / 22050;
+    a->lfo_delay_frames = 0;
     a->lfo_pitch_inherent_cents = 0;
     a->lfo_pitch_cc1_cents = 0;
     a->lfo_atten_inherent_hdb = 0;
@@ -178,6 +179,24 @@ static void artic_defaults(Artic *a)
     a->eg1_attack_vel_tc = 0;
     a->eg1_decay_kf_tc = 0;
     a->eg2_decay_kf_tc = 0;
+}
+
+/* 0x153aa: no INT32_MIN case, so it gives step 0. The float32 constants and
+ * the truncating ftol (0x106e0) are the driver's. */
+static uint32_t lfo_step_from_tc(int32_t tc)
+{
+    double x = ((double) tc / 65536.0 - 6900.0) * 0.0008333333535119891;
+    return (uint32_t) (rt_pow(2.0, x) * 440.0 * 1048576.0 / 22050.0);
+}
+
+/* 0x15364: float32 1/(65536*1200) reads slightly high, so 0.5 s truncates to
+ * 11024 frames */
+static uint32_t lfo_delay_from_tc(int32_t tc)
+{
+    if (tc == (int32_t) 0x80000000)
+        return 0;
+    return (uint32_t) (rt_pow(2.0, (double) tc * 1.2715657859985185e-08) *
+                       22050.0);
 }
 
 static int16_t clamp_cents(int32_t v)
@@ -226,10 +245,10 @@ static void apply_art1(const uint8_t *cdata, uint32_t csize, Artic *a)
                         a->pan_cb = (int16_t)((lscale >> 12) / 125);
                     break;
                 case ART_DST_LFO_FREQUENCY:
-                    a->lfo_freq_tc = lscale;
+                    a->lfo_step = lfo_step_from_tc(lscale);
                     break;
                 case ART_DST_LFO_DELAY:
-                    a->lfo_delay_tc = lscale;
+                    a->lfo_delay_frames = lfo_delay_from_tc(lscale);
                     break;
                 case ART_DST_EG1_ATTACKTIME:
                     a->eg1_attack_tc = lscale;

@@ -3685,8 +3685,10 @@ static void t_findings_live(void)
         v->wave = &w;
         v->base_ratio_q12 = 4096;
         v->atten_const_hdb = -3000;
-        /* Table D index 32: trunc(100*sin(pi/4)) = 70 */
-        v->lfo_phase = 32.0 / 256.0;
+        /* step 4096 advances one Table D index per frame; index 32:
+           trunc(100*sin(pi/4)) = 70 */
+        v->artic->lfo_step = 4096;
+        v->lfo_elapsed = 32;
         v->artic->lfo_pitch_cc1_cents = 1000;
         v->artic->lfo_pitch_inherent_cents = 100;
         v->artic->lfo_atten_cc1_hdb = -1000;
@@ -3713,7 +3715,7 @@ static void t_findings_live(void)
            rounding down gives -499, double math -498 */
         v->artic->lfo_pitch_cc1_cents = -1000;
         v->artic->lfo_pitch_inherent_cents = 0;
-        v->lfo_phase = 60.0 / 256.0;
+        v->lfo_elapsed = 60;
         lfo = 64 * -1000 / 127 * g_table_sine[60] / 100;
         voice_update_pitch(v);
         raw = ((uint64_t) 22050 * 4096u *
@@ -3722,6 +3724,25 @@ static void t_findings_live(void)
         is_int(v->phase_step_target, (uint32_t) (raw / RENDER_RATE),
                "LFO->pitch truncates toward zero at both divisions (idiv) "
                "[A:0x189e4]");
+        /* 5000 frames past a 100-frame delay at 5 Hz: 5000*237>>12 = 289,
+           wraps to index 33 */
+        v->artic->lfo_step = 237;
+        v->artic->lfo_delay_frames = 100;
+        v->lfo_elapsed = 0;
+        voices_advance_lfo(5100);
+        lfo = 64 * -1000 / 127 * g_table_sine[33] / 100;
+        voice_update_pitch(v);
+        raw = ((uint64_t) 22050 * 4096u *
+               (uint64_t) vo_cents_to_ratio_q12(lfo)) >>
+              12;
+        is_int(v->phase_step_target, (uint32_t) (raw / RENDER_RATE),
+               "LFO index is ((frames since note-on - delay) * step >> 12) & "
+               "255 [A:0x1891e]");
+        v->lfo_elapsed = 99;
+        voice_update_pitch(v);
+        is_int(v->phase_step_target, (uint32_t) (22050u * 4096u / RENDER_RATE),
+               "LFO output is 0 until the delay has elapsed [A:0x18945]");
+        v->artic->lfo_step = v->artic->lfo_delay_frames = 0;
         v->artic->lfo_pitch_cc1_cents = v->artic->lfo_pitch_inherent_cents = 0;
         v->artic->lfo_atten_cc1_hdb = v->artic->lfo_atten_inherent_hdb = 0;
         voice_pool_reset();
@@ -4222,11 +4243,50 @@ static void t_findings_dls(void)
            "S2.4.3 LFO->attenuation, CC1: same scale into art+0x50, clamped "
            "to +-1200 [A:0x1590b]");
         static const dlx_conn lo[1] = {
-            {1, 0, ART_DST_ATTENUATION, 0, -200 << 16}};
+            {1, 0, ART_DST_ATTENUATION, 0, -(200 << 16)}};
         rc = dlx_load_one(0, lo, 1, 0);
         r = dlx_region0();
         ok(rc == 0 && r && r->artic->lfo_atten_inherent_hdb == -1200,
            "S2.4.3 LFO->attenuation clamps below at -1200 [A:0x15926]");
+    }
+
+    tap_diag("--- S2.4.3: LFO rate and delay become a phase step and a frame "
+             "count at parse [A:0x14176],[A:0x153aa],[A:0x15364] ---");
+    {
+        static const dlx_conn none[1] = {{0, 0, ART_DST_EG1_ATTACKTIME, 0, 0}};
+        int rc = dlx_load_one(0, none, 1, 0);
+        Region *r = dlx_region0();
+        Artic *a = r ? r->artic : 0;
+        ok(rc == 0 && a && a->lfo_step == 0x500000 / 22050 &&
+               a->lfo_delay_frames == 0,
+           "S2.4.3 no LFO connections: 5 Hz, step 0x500000/22050 = 237, no "
+           "delay [A:0x14176]");
+        static const dlx_conn c[2] = {
+            {0, 0, ART_DST_LFO_FREQUENCY, 0, -35106105},
+            {0, 0, ART_DST_LFO_DELAY, 0, -1200 * 65536},
+        };
+        rc = dlx_load_one(0, c, 2, 0);
+        r = dlx_region0();
+        a = r ? r->artic : 0;
+        /* 440*2^((tc/65536 - 6900)/1200) = 6.0000 Hz; *2^20/22050 = 285.3 */
+        ok(rc == 0 && a && a->lfo_step == 285,
+           "S2.4.3 LFO frequency: trunc(440*2^((tc-6900)/1200)*2^20/22050) "
+           "[A:0x153aa]");
+        /* float32 1/(65536*1200) is high: 2^-1.0000000242 * 22050 =
+           11024.9998 */
+        ok(a && a->lfo_delay_frames == 11024,
+           "S2.4.3 LFO delay: trunc(2^(tc*float(1/78643200))*22050) frames, "
+           "so 0.5 s is 11024 [A:0x15364]");
+        static const dlx_conn m[2] = {
+            {0, 0, ART_DST_LFO_FREQUENCY, 0, (int32_t) 0x80000000},
+            {0, 0, ART_DST_LFO_DELAY, 0, (int32_t) 0x80000000},
+        };
+        rc = dlx_load_one(0, m, 2, 0);
+        r = dlx_region0();
+        a = r ? r->artic : 0;
+        ok(rc == 0 && a && a->lfo_step == 0 && a->lfo_delay_frames == 0,
+           "S2.4.3 INT32_MIN frequency has no special case (step 0, LFO "
+           "frozen); INT32_MIN delay is 0 [A:0x153aa],[A:0x15369]");
     }
 
     tap_diag("--- S3.2: a region with no lart at either scope never sounds "

@@ -15,7 +15,7 @@ Every entry has the same four fields: *Known* (what is settled, with VMAs),
 *Where* (code and tests). Delete an entry once it is closed; the closing
 assertion in `unit.c` is the record.
 
-Corpus baseline: *MEAN r 0.932, residual −32.48 dB*.
+Corpus baseline: *MEAN r 0.932, residual −32.98 dB*.
 
 [#i-ceiling-populations]
 == i-ceiling-populations: the per-voice gain ceiling splits the corpus (audible, 13.9 dB on one item)
@@ -59,8 +59,14 @@ Segment = min(next envelope change, `(rate+19)/20` = 1103 frames `0x128f9`,
 buffer end). The buffer is the caller's KS buffer (`0x181fa`), not a driver
 constant. Probes 45/46 measure ~512 frames; probe 44 implies 24–28 ms.
 Corpus sweep: 128 −31.18, 256 −31.14, 512 −30.90 dB; 512 costs `08_reverb`
-+9.5 and `03_velocity` +7.1 dB.
-Open:: Why decay-dominated items regress at 512 (suspect: a chord across a
++9.5 and `03_velocity` +7.1 dB. The "next envelope change" (`+0x108`,
+consumed at `0x196cd`) is also lowered by the LFO: `0x1891e` reports the
+remaining delay, then `0x20000/step` frames (1/8 LFO cycle), and only an
+LFO with all four depths 0 reports 44100 (`0x188f0`). Every gm.dls patch
+seen so far carries CC1→pitch 47 c, so its segment is ≤ 459 frames at 6 Hz
+(Sine, Square) and 530 at 5.2 Hz (Piano), which brackets the ~512.
+Open:: Whether the LFO bound alone accounts for the ~512 measurement. Why
+decay-dominated items regress at 512 (suspect: a chord across a
 fast geometric decay sits above the curve, so the reference's effective
 segment is finer than 23.5 ms).
 Settle by:: Per-segment comparison on `08_reverb`'s decay.
@@ -107,6 +113,25 @@ Open:: The duration, the bimodality, the asymmetry.
 Settle by:: Re-derive both readings; `32.flac`'s alignment drifts 422 ms
 non-linearly, so do not fit against it.
 Where:: `voice.c` `RAMP_HORIZON_FRAMES`, `ramp_reaim`; no test.
+
+[#i-vibrato-depth]
+== i-vibrato-depth: the reference's vibrato is ~5% shallower than the render
+
+Known:: `13_edge` 16.6–17.6 s (Piano 1, CC1=127, authored 47+1 c at 5.2 Hz):
+a sinusoid fit to the 8th harmonic's track (1024-point STFT, same tracker
+for both) gives reference 44.1 c at 5.215 Hz and render 46.2 c at 5.185 Hz.
+Phase relative to each note's own onset differs by 28°, which is within
+the onset uncertainty. This segment is the whole `13_edge` change (−38.73 dB before
+`edf5b31`, −38.55 now).
+Open:: Where the ~2 c goes. Suspect: the driver samples the LFO once per
+segment (≤ 530 frames here, <<i-segment-length>>) where the engine samples
+every 64; a held or ramped sinusoid sampled at 1/8 cycle loses 2–5% of its
+fundamental.
+Settle by:: Probe 51's reference (`probe-results/51.flac`): Shakuhachi's
+18 c inherent vibrato and Tremolo Str's 10 Hz tremolo at CC1=0, measured
+the same way.
+Where:: `voice.c` `voice_lfo`, `voices_advance_lfo`; `voice.h`
+`LFO_UPDATE_FRAMES`; no test.
 
 [#i-bankprog-lookahead]
 == i-bankprog-lookahead: Bank/Program look-ahead within a tick ([F])
