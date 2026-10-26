@@ -51,26 +51,37 @@ floor.
 Where:: `voice.c` `RELEASE_FLOOR_S`; unit.c TODO `S5.6 a 10 ms authored release`.
 
 [#i-segment-length]
-== i-segment-length: GAIN_SEGMENT_FRAMES is 256, the references show ~512 ([F])
+== i-segment-length: the engine's segment is a fixed 256 frames, the driver's is per voice ([F])
 
-Known:: The mixer re-aims once per segment and ramps linearly in amplitude
-to the gain sampled at the segment end (`0x19644`, `0x19490`, `0x18fba`).
-Segment = min(next envelope change, `(rate+19)/20` = 1103 frames `0x128f9`,
-buffer end). The buffer is the caller's KS buffer (`0x181fa`), not a driver
-constant. Probes 45/46 measure ~512 frames; probe 44 implies 24–28 ms.
-Corpus sweep: 128 −31.18, 256 −31.14, 512 −30.90 dB; 512 costs `08_reverb`
-+9.5 and `03_velocity` +7.1 dB. The "next envelope change" (`+0x108`,
-consumed at `0x196cd`) is also lowered by the LFO: `0x1891e` reports the
-remaining delay, then `0x20000/step` frames (1/8 LFO cycle), and only an
-LFO with all four depths 0 reports 44100 (`0x188f0`). Every gm.dls patch
-seen so far carries CC1→pitch 47 c, so its segment is ≤ 459 frames at 6 Hz
-(Sine, Square) and 530 at 5.2 Hz (Piano), which brackets the ~512.
-Open:: Whether the LFO bound alone accounts for the ~512 measurement. Why
-decay-dominated items regress at 512 (suspect: a chord across a
-fast geometric decay sits above the curve, so the reference's effective
-segment is finer than 23.5 ms).
-Settle by:: Per-segment comparison on `08_reverb`'s decay.
-Where:: `render.c` `GAIN_SEGMENT_FRAMES`; unit.c TODO `S6.6 ramp/envelope update cadence value`.
+Known:: `0x19644` (per voice, from `0x130d3`) renders in segments. At
+`0x196cd` the segment end is min(now + `+0x108`, buffer end); `0x196f0`
+resets `+0x108` to the cap `[+0x104]+0x18` = `(rate+19)/20` = 1103 frames
+(`0x12901`); then pitch (`0x195a2`, called at `0x1970c`) and volume
+(`0x19490`) are evaluated at the segment end, and each lowers `+0x108` to
+its sources' next change: EG1 and the LFO on the volume side (`0x194cc`,
+`0x1950a`), the LFO and EG2 on the pitch side (`0x195dd`, `0x19619`). At
+note-on `+0x108` starts at the LFO bound (`0x19c56`) and the EGs lower it
+(`0x19c7a`–`0x19ce3`). The LFO bound (`0x1891e`) is the remaining delay,
+then `0x20000/step` frames (1/8 cycle); an LFO with all four depths 0
+reports 44100 (`0x188f0`). Every gm.dls patch seen so far carries CC1→pitch
+47 c, so its segment is ≤ 459 frames at 6 Hz (Sine, Square) and 530 at
+5.2 Hz (Piano); probes 45/46 measure ~512 and probe 44 implies 24–28 ms.
+The mixer ramps gain linearly in amplitude to the value at the segment end
+(`0x18fba`). The buffer is the caller's KS buffer (`0x181fa`).
+Open:: Whether pitch ramps or holds across a segment (bears on
+<<i-vibrato-depth>>). Whether the per-voice minimum also fixes the
+decay-dominated items: a fixed 512 cost `08_reverb` +9.5 and `03_velocity`
++7.1 dB (sweep at the old −31 dB baseline: 128 −31.18, 256 −31.14,
+512 −30.90; re-run against −32.98).
+Settle by:: Replace the unit.c TODO first (its reason, "segment length is
+the caller's KS buffer, not a driver constant", predates this): assert the
+LFO bound `0x20000/step` and 44100 at zero depth, and the segment as the
+minimum above. Then model segments per voice in place of
+`GAIN_SEGMENT_FRAMES` and gate on the corpus, watching `08_reverb`,
+`03_velocity`, `13_edge` and probes 44–46.
+Where:: `render.c` `GAIN_SEGMENT_FRAMES`; `voice.h` `LFO_UPDATE_FRAMES`,
+`SERVICE_BLOCK_FRAMES` (also smf.c's event split); unit.c TODO `S6.6
+ramp/envelope update cadence value`.
 
 [#i-envelope-cadence]
 == i-envelope-cadence: envelopes and top-up run per sample / per tick, not per service call ([F])
