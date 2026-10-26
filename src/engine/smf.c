@@ -36,6 +36,7 @@ static uint32_t g_sample_pos = 0;
 static int32_t g_loop_remaining = 0; /* -1 = infinite, 0 = no more loops */
 static int g_finished = 0;
 static int g_loaded = 0;
+static uint32_t g_jitter_ms = 0; /* smf_set_jitter_ms */
 
 static uint32_t rd_u32be(const uint8_t *p)
 {
@@ -406,6 +407,28 @@ int smf_load(const uint8_t *data, uint32_t len)
             cur_tempo = e->tempo_usec;
     }
 
+    /* Each tick's events arrive late by one uniform draw, never reordered.
+     * xorshift32 reseeded per load, so a render replays exactly; drawn in
+     * 1/1024ths of the span, so the realization is rate-independent. */
+    if (g_jitter_ms)
+    {
+        uint32_t span = g_jitter_ms * RENDER_RATE / 1000;
+        uint32_t x = 2463534242u, late = 0, last = 0;
+        for (uint32_t i = 0; i < total; i++)
+        {
+            if (i == 0 || arr[i].abs_tick != arr[i - 1].abs_tick)
+            {
+                x ^= x << 13;
+                x ^= x >> 17;
+                x ^= x << 5;
+                late = ((x >> 22) * span) >> 10;
+            }
+            uint32_t t = arr[i].sample_time + late;
+            last = t > last ? t : last;
+            arr[i].sample_time = last;
+        }
+    }
+
     g_events = arr;
     g_event_count = total;
     g_song_length_samples = arr[total - 1].sample_time;
@@ -414,6 +437,9 @@ int smf_load(const uint8_t *data, uint32_t len)
 }
 
 void smf_set_loop(int32_t loops) { g_loop_remaining = loops; }
+
+/* clamped to 1 s, which keeps the span arithmetic within 32 bits */
+void smf_set_jitter_ms(uint32_t ms) { g_jitter_ms = ms > 1000 ? 1000 : ms; }
 
 static void dispatch_event(Event *e)
 {

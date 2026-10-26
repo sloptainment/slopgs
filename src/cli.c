@@ -247,6 +247,31 @@ static int selftest(const char *dls_path, const char *smf_path)
         fail = 1;
     }
 
+    /* --jitter: the draw is reseeded per load, so a jittered song replays
+     * exactly. */
+    long long ej[2] = {0, 0};
+    smf_set_jitter_ms(22);
+    for (int pass = 0; pass < 2; pass++)
+    {
+        synth_construct();
+        smf_load(smf, smf_len);
+        smf_set_loop(0);
+        for (int k = 0; k < 64; k++)
+        {
+            uint32_t m = smf_render(buf, CHUNK);
+            for (uint32_t i = 0; i < m * 2; i++)
+                ej[pass] += buf[i] < 0 ? -buf[i] : buf[i];
+        }
+    }
+    smf_set_jitter_ms(0);
+    if (ej[0] != ej[1] || ej[0] == 0)
+    {
+        fprintf(stderr,
+                "FAIL: jittered replay differs -- energy %lld vs %lld\n", ej[0],
+                ej[1]);
+        fail = 1;
+    }
+
     printf("%s: pass1 %lu frames, pass2 %lu frames; rewind produced %u frames;"
            " %d/48 voices survive saturation\n",
            fail ? "FAIL" : "PASS", frames[0], frames[1], n, surviving);
@@ -256,6 +281,14 @@ static int selftest(const char *dls_path, const char *smf_path)
 
 int main(int argc, char **argv)
 {
+    /* --jitter=MS: capture realism (smf_set_jitter_ms), off by default */
+    if (argc > 1 && strncmp(argv[1], "--jitter=", 9) == 0)
+    {
+        smf_set_jitter_ms((uint32_t) strtoul(argv[1] + 9, NULL, 10));
+        argv[1] = argv[0];
+        argv++;
+        argc--;
+    }
     if (argc == 4 && strcmp(argv[1], "--selftest") == 0)
     {
         return selftest(argv[2], argv[3]);
@@ -263,7 +296,8 @@ int main(int argc, char **argv)
     if (argc != 6)
     {
         fprintf(stderr,
-                "usage: %s <dls> <smf|\"\"> <loops> <max_frames> <out_wav>\n"
+                "usage: %s [--jitter=MS] <dls> <smf|\"\"> <loops> <max_frames> "
+                "<out_wav>\n"
                 "       %s --selftest <dls> <smf>\n",
                 argv[0], argv[0]);
         return 1;

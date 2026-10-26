@@ -5,7 +5,7 @@
  * The kernel-streaming plumbing (IRPs, pins, clocks) is never entered.
  *
  * Same command line as msgs-render, so score.py can A/B it via MSGS_RENDER:
- *   oracle <dls> <smf> <loops> <max_frames> <out_wav>
+ *   oracle [--jitter=MS] <dls> <smf> <loops> <max_frames> <out_wav>
  * The driver path is compiled in (SWMIDI_SYS, see Makefile).
  *
  * Freestanding i386: no 32-bit libc is assumed, syscalls go through int 0x80.
@@ -539,9 +539,21 @@ static void wav_header(int fd, uint32_t frames)
 
 static int oracle_main(int argc, char **argv)
 {
+    /* --jitter=MS: capture realism (smf_set_jitter_ms), as msgs-render */
+    const char *flag = "--jitter=";
+    uint32_t k = 0;
+    while (argc > 1 && flag[k] && argv[1][k] == flag[k])
+        k++;
+    if (!flag[k])
+    {
+        smf_set_jitter_ms(to_u32(argv[1] + k));
+        argv++;
+        argc--;
+    }
     if (argc != 6)
     {
-        say("usage: oracle <dls> <smf> <loops> <max_frames> <out_wav>\n");
+        say("usage: oracle [--jitter=MS] <dls> <smf> <loops> <max_frames> "
+            "<out_wav>\n");
         return 1;
     }
     if (!(g_dls = read_file(argv[1], &g_dls_len)))

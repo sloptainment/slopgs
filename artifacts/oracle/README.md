@@ -11,6 +11,7 @@ $ MSGS_RENDER=artifacts/oracle/oracle .venv/bin/python artifacts/score.py   # A/
 - The arguments are the same as `msgs-render`'s; the output is a 22050 Hz stereo 16-bit WAV.
 - The driver is read from `artifacts/swmidi.sys`, a path fixed at build time. Only the XP SP3 build (5.1.2600.5512) is accepted.
 - `MIX_FRAMES` (default 1024) is the one build knob: frames per call to the driver's `Mix`.
+- `--jitter=MS` (before the other arguments, as in `msgs-render`) delays each tick's events by a uniform random 0–MS ms, in order and reproducibly. It's for realism: the reference captures show about 22 ms of such jitter; the driver adds none.
 - The entry-point addresses were taken from Microsoft's public symbols (`swmidi.pdb`) and are hardcoded, so the PDB is needed neither to build nor to run.
 
 ## Why that's possible
