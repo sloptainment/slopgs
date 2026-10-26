@@ -58,6 +58,10 @@ $(DIST)/msgs.wasm: $(WASM_SRCS) $(ENGINE_HDRS) | $(DIST)
 $(DIST)/msgs-render: $(CLI_SRCS) $(ENGINE_HDRS) | $(DIST)
 	$(CC) $(CFLAGS_NATIVE) -o $@ $(CLI_SRCS) -lm
 
+# RESAMPLE_FACTOR=2 build for artifacts/rate_parity.py
+$(DIST)/msgs-render-x2: $(CLI_SRCS) $(ENGINE_HDRS) | $(DIST)
+	$(CC) $(CFLAGS_NATIVE) -DRESAMPLE_FACTOR=2 -o $@ $(CLI_SRCS) -lm
+
 $(DIST)/msgs-unit: $(UNIT_SRCS) $(ENGINE_HDRS) src/unit_tap.h | $(DIST)
 	$(CC) $(CFLAGS_NATIVE) -o $@ $(UNIT_SRCS) -lm
 
@@ -71,7 +75,7 @@ $(DIST):
 	mkdir -p $(DIST)
 
 clean:
-	rm -f $(DIST)/msgs.wasm $(DIST)/msgs-render $(DIST)/msgs-unit
+	rm -f $(DIST)/msgs.wasm $(DIST)/msgs-render $(DIST)/msgs-render-x2 $(DIST)/msgs-unit
 	rm -f $(DIST)/msgs-vsti-x86.dll $(DIST)/vsti-test
 
 probes:

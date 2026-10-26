@@ -16,6 +16,10 @@ order**, finishing each step before the next:
 . The engine under `src/`: implement until the assertion passes and the
   corpus gate holds: targeted item improves, mean does not regress. *Green.*
 . Optimize what you just added while both stay green. *Refactor.*
+. Make it *rate-generic*: keep a copy of the green `dist/msgs-render`, run
+  `make dist/msgs-render dist/msgs-render-x2`, and fix until
+  `artifacts/rate_parity.py` passes the targeted item (<<rate-parity>>) and
+  every ×1 corpus render is byte-identical to the copy's. *Rate.*
 . `INVESTIGATE.adoc`: delete what this closed; add what it opened.
 . `impl-chart/CHART.adoc`: if a musician would notice, suggest changes to
   the user, who edits it.
@@ -73,6 +77,9 @@ the reference does not have. Read it on `field/` items only: a sparse probe's
 reference never drops below the threshold (dither), so its genuine
 inter-case gaps all count.
 
+`rate_parity.py`:: The *Rate* step's check, see <<rate-parity>>. Takes
+`score.py`'s item names and needs no reference.
+
 === `src/engine/`
 
 Freestanding C: no libc, libm, malloc or stdio. `rt.c` supplies
@@ -114,6 +121,20 @@ sustained tones; pick the tolerance by signal type.
 Analytical:: Peak/RMS/spectral dB residual per probe (nearer 0 dB is worse),
 and envelope correlation `r` against the reference track.
 Visual:: Large spectrograms of both, labelled `slopgs` and `reference`.
+
+[[rate-parity]]
+=== Rate parity
+
+The engine renders at `RENDER_RATE = BASE_RATE * RESAMPLE_FACTOR`
+(`voice.h`). Driver constants keep their `BASE_RATE` units and convert where
+they are used; every frame count and per-frame step goes through
+`RENDER_RATE` or `RESAMPLE_FACTOR`.
+
+`rate_parity.py` downsamples a ×2 render to 22050 Hz and checks it against
+the ×1 render; its `BAR` holds the thresholds. Pitch is tracked in 46 ms
+frames, so a wrong LFO rate fails it as surely as a detune. Waveform `r` is
+left out: the Q12 phase step truncates, so ×2 reads up to ~0.85 c flat,
+which decorrelates sustained tones inaudibly.
 
 === Confirming
 
