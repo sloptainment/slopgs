@@ -171,7 +171,7 @@ static double exp_coef_scaled(double seconds, double mult)
 {
     if (seconds <= 0.0)
         return 0.0;
-    double samples = seconds * (double) RENDER_RATE;
+    double samples = seconds * (double) BASE_RATE;
     if (samples < 1.0)
         samples = 1.0;
     return rt_pow(10.0, (-(ENV_SPAN_DB / 20.0) * mult) / samples);
@@ -306,7 +306,8 @@ static int32_t voice_lfo_cents(Voice *v)
 static void ramp_reaim(Voice *v, uint32_t frames)
 {
     int64_t d = (int64_t) v->phase_step_target - (int64_t) v->phase_step;
-    int32_t slope = (int32_t)((d << 8) / (int64_t) frames); /* Q8 per sample */
+    /* Q8 per BASE_RATE frame */
+    int32_t slope = (int32_t) ((d << 8) / (int64_t) (frames / RESAMPLE_FACTOR));
     if (slope == 0)
     {
         v->phase_step = v->phase_step_target;
@@ -316,6 +317,7 @@ static void ramp_reaim(Voice *v, uint32_t frames)
         return;
     }
     v->phase_step_ramp_step = slope;
+    v->ramp_sub = 0;
     v->ramp_left = frames;
 }
 
@@ -356,7 +358,7 @@ void voice_update_pitch(Voice *v)
     uint64_t raw =
         (uint64_t) v->wave->sample_rate * (uint64_t) v->base_ratio_q12;
     raw = (raw * (uint64_t)(uint32_t) cents_to_ratio_q12(mod_cents)) >> 12;
-    uint32_t new_target = (uint32_t)(raw / RENDER_RATE);
+    uint32_t new_target = (uint32_t) (raw / BASE_RATE);
 
     /* Only bend is ramped: probes 32/33 carry no LFO or pitch EG, and
      * routing them through the ramp cost 06_modwheel 3.2 dB and
@@ -804,7 +806,7 @@ void voice_note_on(int channel, int note, int velocity)
      * from 1.0, not an asymptotic approach; env_decay_samples_left is the exact
      * countdown that snaps it to env_sustain_level. */
     int32_t decay_samples =
-        (int32_t)(decay_to_sustain_s * (double) RENDER_RATE + 0.5);
+        (int32_t) (decay_to_sustain_s * (double) BASE_RATE + 0.5);
     if (decay_samples > 0)
     {
         v->env_decay_samples_left = decay_samples;
@@ -828,13 +830,14 @@ void voice_note_on(int channel, int note, int velocity)
     {
         v->env_level = 0.0;
         v->env_stage = ENV_ATTACK;
-        v->env_attack_step = 1.0 / (attack_s * (double) RENDER_RATE);
+        v->env_attack_step = 1.0 / (attack_s * (double) BASE_RATE);
         v->env_attack_elapsed = 0;
-        v->env_attack_samples =
-            (int32_t)(attack_s * (double) RENDER_RATE + 0.5);
+        v->env_attack_samples = (int32_t) (attack_s * (double) BASE_RATE + 0.5);
         if (v->env_attack_samples < 1)
             v->env_attack_samples = 1;
     }
+
+    v->env_sub = 0;
 
     /* EG2 [A:0x15838]: same segment structure as EG1 but scales
      * eg2_to_pitch_cents; zero depth (the default) leaves it inert */
@@ -938,10 +941,10 @@ int voice_any_active(void)
     return 0;
 }
 
-/* Frames until EG1's current segment ends (the driver's "next change" term,
- * [A:0x19490]); sustain/release return ENV_NO_CHANGE since neither has a
- * scheduled end. */
-uint32_t voice_env_frames_to_change(const Voice *v)
+/* BASE_RATE frames until EG1's current segment ends (the driver's "next
+ * change" term, [A:0x19490]); sustain/release return ENV_NO_CHANGE since
+ * neither has a scheduled end. */
+static uint32_t env_base_frames_to_change(const Voice *v)
 {
     switch (v->env_stage)
     {
@@ -965,8 +968,20 @@ uint32_t voice_env_frames_to_change(const Voice *v)
     }
 }
 
+/* the same boundary in RENDER_RATE frames, counting the held calls left
+ * before the next step */
+uint32_t voice_env_frames_to_change(const Voice *v)
+{
+    uint32_t n = env_base_frames_to_change(v);
+    if (n > ENV_NO_CHANGE / RESAMPLE_FACTOR)
+        return ENV_NO_CHANGE;
+    return n * RESAMPLE_FACTOR - v->env_sub % RESAMPLE_FACTOR;
+}
+
 double voice_step_envelope(Voice *v)
 {
+    if (++v->env_sub % RESAMPLE_FACTOR)
+        return v->env_level;
     switch (v->env_stage)
     {
         case ENV_ATTACK:

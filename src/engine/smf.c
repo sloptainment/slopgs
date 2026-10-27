@@ -401,8 +401,9 @@ int smf_load(const uint8_t *data, uint32_t len)
             time_accum += (double) delta_ticks * seconds_per_tick;
         }
         last_tick = e->abs_tick;
-        double st = time_accum * (double) RENDER_RATE + 0.5;
-        e->sample_time = (st < 0.0) ? 0 : (uint32_t) st;
+        /* rounded on the BASE_RATE grid, so every rate sees the same frames */
+        double st = time_accum * (double) BASE_RATE + 0.5;
+        e->sample_time = (st < 0.0) ? 0 : (uint32_t) st * RESAMPLE_FACTOR;
         if (e->kind == EKIND_TEMPO)
             cur_tempo = e->tempo_usec;
     }
@@ -412,7 +413,7 @@ int smf_load(const uint8_t *data, uint32_t len)
      * 1/1024ths of the span, so the realization is rate-independent. */
     if (g_jitter_ms)
     {
-        uint32_t span = g_jitter_ms * RENDER_RATE / 1000;
+        uint32_t span = g_jitter_ms * BASE_RATE / 1000;
         uint32_t x = 2463534242u, late = 0, last = 0;
         for (uint32_t i = 0; i < total; i++)
         {
@@ -421,7 +422,7 @@ int smf_load(const uint8_t *data, uint32_t len)
                 x ^= x << 13;
                 x ^= x >> 17;
                 x ^= x << 5;
-                late = ((x >> 22) * span) >> 10;
+                late = (((x >> 22) * span) >> 10) * RESAMPLE_FACTOR;
             }
             uint32_t t = arr[i].sample_time + late;
             last = t > last ? t : last;

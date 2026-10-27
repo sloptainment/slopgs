@@ -45,8 +45,8 @@ static void render_voice(Voice *v, int16_t *out, uint32_t frames,
         block_left -= v->start_delay;
         v->start_delay = 0;
     }
-    uint32_t sample_end_q12 = (uint32_t) v->sample_end_s << 12;
-    uint32_t loop_len_q12 = (uint32_t) v->loop_len_s << 12;
+    uint32_t sample_end_q12 = (uint32_t) v->sample_end_s * PHASE_ONE;
+    uint32_t loop_len_q12 = (uint32_t) v->loop_len_s * PHASE_ONE;
     int32_t sample_count = v->wave->sample_count;
     const int16_t *samples = v->wave->samples;
 
@@ -74,14 +74,17 @@ static void render_voice(Voice *v, int16_t *out, uint32_t frames,
 
             v->gain_l = v->gain_l_target;
             v->gain_r = v->gain_r_target;
-            v->amp_step_l = (env_end * v->gain_l - v->amp_l) / (double) seg;
-            v->amp_step_r = (env_end * v->gain_r - v->amp_r) / (double) seg;
+            /* steps this segment takes on the BASE_RATE grid */
+            uint32_t steps = (seg + RESAMPLE_FACTOR - 1) / RESAMPLE_FACTOR;
+            v->amp_step_l = (env_end * v->gain_l - v->amp_l) / (double) steps;
+            v->amp_step_r = (env_end * v->gain_r - v->amp_r) / (double) steps;
+            v->amp_sub = 0;
             v->amp_left = seg;
         }
 
         /* phase step is a ramp accumulator held between refreshes (0x18fba),
          * advanced before use so sample 0 already reflects one step */
-        if (v->phase_step_ramp_step)
+        if (v->phase_step_ramp_step && v->ramp_sub++ % RESAMPLE_FACTOR == 0)
         {
             /* 1/256 LSB precision: a +-2 semitone bend at key 72 moves ~420
              * LSBs, under 1 per sample, so a whole-LSB slope turned the ramp
@@ -99,8 +102,8 @@ static void render_voice(Voice *v, int16_t *out, uint32_t frames,
         }
 
         uint32_t pos = v->phase_pos;
-        int32_t idx = (int32_t)(pos >> 12);
-        int32_t frac = (int32_t)(pos & 0xFFFu);
+        int32_t idx = (int32_t) (pos / PHASE_ONE);
+        int32_t frac = (int32_t) (pos % PHASE_ONE / RESAMPLE_FACTOR);
 
         if (idx >= sample_count)
             idx = sample_count > 0 ? sample_count - 1 : 0;
@@ -115,8 +118,11 @@ static void render_voice(Voice *v, int16_t *out, uint32_t frames,
         /* one ramp step of the segment's amplitude; envelope x gain is summed
          * to ONE attenuation and ramped as a single product [A:0x190dc], item
          * 21 */
-        v->amp_l += v->amp_step_l;
-        v->amp_r += v->amp_step_r;
+        if (v->amp_sub++ % RESAMPLE_FACTOR == 0)
+        {
+            v->amp_l += v->amp_step_l;
+            v->amp_r += v->amp_step_r;
+        }
         int32_t out_l = (int32_t)((double) interp * v->amp_l);
         int32_t out_r = (int32_t)((double) interp * v->amp_r);
 

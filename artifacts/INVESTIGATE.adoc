@@ -240,6 +240,33 @@ Open:: The tap values (filled at runtime, not static) and the rate gate.
 Settle by:: A kernel-debugger dump of the tap buffer at `0x2c0a0`.
 Where:: `src/vsti/vsti.c` models it; the engine does not.
 
+[#i-rate-parity]
+== i-rate-parity: 6 items fail rate_parity.py from aliasing ×1 has and ×2 does not
+
+Known:: The engine is rate-exact: every ×2 frame 2n equals ×1 frame n bit for
+bit on all 70 corpus MIDIs (silent tails aside: the CLI's 4096-frame stop
+check is 2048 ×1 frames at ×2). Phase is in `PHASE_ONE` units, and event
+times, the bend ramp, EG1 and the amplitude ramp all step on the
+`BASE_RATE` grid. `rate_parity.py` (soxr) still fails these:
++
+[%autowidth]
+|===
+|item |env_r |pitch_c |band_db
+|02_keyrange |0.9714 |0.00 |0.02
+|30_tune_clamp_bend |0.9054 |0.02 |0.71
+|31_tune_clamp_bend_sine |0.8189 |0.00 |0.00
+|radio |0.9264 |1173.09 |6.44
+|wild-sweep |0.9879 |0.03 |0.07
+|Strobe-faffaeefafaefae |0.9928 |0.06 |0.09
+|===
++
+Each is content above 11025 Hz: ×1 folds it into the band, ×2 renders it
+unfolded and soxr removes it (31 goes silent at key 127, 14.2 s).
+Open:: Whether `rate_parity.py` should compare by 2:1 decimation, which
+keeps ×1's aliasing and passes all 70 exactly, or keep soxr and exempt these.
+Settle by:: A policy decision; no measurement is outstanding.
+Where:: `artifacts/rate_parity.py` `render()`.
+
 [#i-gm-off-voices]
 == i-gm-off-voices: does a sounding voice survive GM System Off
 

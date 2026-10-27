@@ -17,6 +17,10 @@
 /* shared modulation cadence for render.c's LFO and voice.c's EG2 stepping */
 #define LFO_UPDATE_FRAMES (64 * RESAMPLE_FACTOR)
 
+/* one sample in phase units: Q12 scaled by RESAMPLE_FACTOR, so phase_step is
+ * the BASE_RATE step and frame R*n lands on frame n's exact position */
+#define PHASE_ONE (4096u * RESAMPLE_FACTOR)
+
 #ifndef SERVICE_BLOCK_FRAMES
 /* audio service block: one clock for re-aim/gain ramp/reserve top-up, see
  * render.c's GAIN_SEGMENT_FRAMES */
@@ -55,10 +59,11 @@ typedef struct Voice
     Wave *wave;
     Artic *artic;
 
-    uint32_t phase_pos; /* Q12: bits31:12 index, bits11:0 fraction */
-    /* Q12 per-output-sample increment; ramped towards phase_step_target one
-     * sample at a time by render.c's render_voice, never written directly
-     * outside voice_note_on's snap and that ramp step (0x18fba) */
+    uint32_t phase_pos; /* PHASE_ONE units: index * PHASE_ONE + fraction */
+    /* per-output-sample increment, PHASE_ONE units; ramped towards
+     * phase_step_target one sample at a time by render.c's render_voice, never
+     * written directly outside voice_note_on's snap and that ramp step
+     * (0x18fba) */
     uint32_t phase_step;
     /* bend the in-flight ramp is aimed at; LFO/EG2 changes are carried through
      * instantly instead */
@@ -73,6 +78,9 @@ typedef struct Voice
     /* leftover 1/256ths from the slope above, carried sample to sample by
      * render_voice */
     int32_t phase_step_ramp_acc;
+    /* frames since ramp_reaim: the slope is per BASE_RATE frame, applied on
+     * every RESAMPLE_FACTOR-th frame */
+    uint32_t ramp_sub;
     /* frames left on the current ramp; 0 = settled. voice_ramp_tick snaps
      * phase_step to target on expiry */
     uint32_t ramp_left;
@@ -98,7 +106,10 @@ typedef struct Voice
      * x gain sampled once per segment END, ramped linearly `[A:0x18fba]` */
     uint32_t amp_left;
     double amp_l, amp_r;           /* applied amplitude, envelope x gain */
-    double amp_step_l, amp_step_r; /* per-frame increment towards the target */
+    /* increment towards the target, per BASE_RATE frame */
+    double amp_step_l, amp_step_r;
+    /* frames into this segment; the step lands on every RESAMPLE_FACTOR-th */
+    uint32_t amp_sub;
     /* envelope finished inside this segment; voice dies at the segment's end,
      * not the envelope's instant, so the committed ramp lands */
     int amp_retire;
@@ -129,6 +140,9 @@ typedef struct Voice
      * env_sustain_level at the rescaled duration rather than a threshold test.
      * 0 while not in ENV_DECAY. */
     int32_t env_decay_samples_left;
+    /* EG1 runs on the BASE_RATE grid: voice_step_envelope advances it on every
+     * RESAMPLE_FACTOR-th call and holds it between */
+    uint32_t env_sub;
 
     /* EG2, the PITCH envelope [A:0x15838]: EG2 to any destination other than
      * PITCH is ignored */
