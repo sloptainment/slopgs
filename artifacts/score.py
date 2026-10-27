@@ -3,8 +3,11 @@
 
     .venv/bin/python artifacts/score.py [name ...]
 
-For every MIDI with a reference FLAC under field/, tests/ and
-artifacts/probes/ (or just the named ones -- a probe answers to either
+The reference is the real driver via artifacts/oracle/oracle (built on
+demand) when this host can run i386 binaries; otherwise the recorded FLACs.
+
+For every MIDI under field/, tests/ and artifacts/probes/ (oracle) or every
+one with a reference FLAC (otherwise), or just the named ones -- a probe answers to either
 "20" or "20_voice_count"), renders with dist/msgs-render and prints the same
 envelope-correlation r and level-normalized spectral residual dB that the
 browser compare pages show, plus a "dead" column: milliseconds of digital
@@ -17,13 +20,29 @@ residuals track compare.js closely but are not bit-identical to it.
 
 Needs numpy (requirements.txt) and ffmpeg.
 """
-import os, subprocess, sys, tempfile, wave
+import os, platform, subprocess, sys, tempfile, wave
 
 import numpy as np
 
 RATE, ENV_HOP_MS, MAX_LAG_S, FFT_SIZE, FFT_HOP = 22050, 50, 5, 2048, 1024
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 RENDERER = os.environ.get("MSGS_RENDER", os.path.join(ROOT, "dist/msgs-render"))
+ORACLE = os.path.join(ROOT, "artifacts/oracle/oracle")
+
+
+def oracle_ok():
+    """x86 host whose kernel runs the i386 oracle (IA32 emulation can be
+    off on x86_64, so exec it: usage exit = runs, OSError = can't)."""
+    if platform.machine().lower() not in {"x86_64", "amd64", "i386", "i486",
+                                          "i586", "i686"}:
+        return False
+    if subprocess.run(["make", "-s", "-C", os.path.dirname(ORACLE)]).returncode:
+        return False
+    try:
+        subprocess.run([ORACLE], capture_output=True)
+    except OSError:
+        return False
+    return True
 
 
 def mono_s16(path):
@@ -40,9 +59,9 @@ def decode_ref(flac, tmp):
     return mono_s16(out)
 
 
-def render(mid, tmp):
-    out = os.path.join(tmp, "slop.wav")
-    subprocess.run([RENDERER, os.path.join(ROOT, "dist/gm.dls"), mid,
+def render(mid, tmp, renderer=RENDERER, name="slop.wav"):
+    out = os.path.join(tmp, name)
+    subprocess.run([renderer, os.path.join(ROOT, "dist/gm.dls"), mid,
                     "0", "999999999", out], check=True, stdout=subprocess.DEVNULL)
     return mono_s16(out)
 
@@ -114,7 +133,7 @@ DIRS = [("field", "field"), ("tests", "tests"),
         ("artifacts/probes", "artifacts/probe-results")]
 
 
-def items(names):
+def items(names, oracle):
     for mid_dir, flac_dir in DIRS:
         p = os.path.join(ROOT, mid_dir)
         if not os.path.isdir(p):
@@ -126,6 +145,9 @@ def items(names):
             num = base.split("_")[0]
             if names and not (names & {base, num}):
                 continue
+            if oracle:
+                yield base, os.path.join(p, f), None
+                continue
             for stem in (base, num):
                 flac = os.path.join(ROOT, flac_dir, stem + ".flac")
                 if os.path.exists(flac):
@@ -135,11 +157,15 @@ def items(names):
 
 def main():
     names = set(sys.argv[1:])
-    print(f"{'item':32s} {'r':>7s} {'residual':>9s} {'dead':>8s}")
+    oracle = oracle_ok()
+    print(f"{'item':32s} {'r':>7s} {'residual':>9s} {'dead':>8s}"
+          f"   vs {'oracle' if oracle else 'FLAC'}")
     rs, res = [], []
-    for base, mid, flac in items(names):
+    for base, mid, flac in items(names, oracle):
         with tempfile.TemporaryDirectory() as tmp:
-            ref, slop = decode_ref(flac, tmp), render(mid, tmp)
+            ref = (render(mid, tmp, ORACLE, "ref.wav") if oracle
+                   else decode_ref(flac, tmp))
+            slop = render(mid, tmp)
         r, lag_ms = align(envelope(ref, ENV_HOP_MS), envelope(slop, ENV_HOP_MS))
         lag = round(lag_ms / 1000 * RATE)
         ai, bi = max(0, lag), max(0, -lag)

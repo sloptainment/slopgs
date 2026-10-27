@@ -2,8 +2,8 @@
 
 == What slopgs is
 
-A clean-room re-implementation of `swmidi.sys` (MSGS) as shipped with Windows
-XP SP3. The aim is a clone that *sounds identical*, quirks included.
+A portable re-implementation via disassembly and measurement of `swmidi.sys` (MSGS) as shipped with Windows
+XP SP3. The aim is a clone (not a decompilation) that *sounds identical*, quirks included.
 
 == Workflow
 
@@ -59,9 +59,10 @@ code details.
 testing one behavior; references go in `probe-results/`. The GS Sine Wave
 patch (`008:080`) makes clean probes.
 
-`score.py`:: The corpus gate: scores every MIDI that has a reference FLAC
-under `field/`, `tests/` and `probes/`. Ask the user to record any missing
-reference. Needs the venv
+`score.py`:: The corpus gate: scores every MIDI under `field/`, `tests/`
+and `probes/` against the real driver via `oracle/` (built on demand) when
+the host runs i386 binaries; otherwise only those with a reference FLAC, and
+ask the user to record any missing reference. Needs the venv
 (`python3 -m venv .venv && .venv/bin/pip install -r requirements.txt`) and
 `ffmpeg`; ~25s for the full corpus.
 +
