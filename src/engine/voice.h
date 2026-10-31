@@ -116,6 +116,9 @@ typedef struct Voice
     /* live target gain, recomputed every block by voice_update_gain from
      * atten_const_hdb plus current channel vol/expr/pan/master vol */
     double gain_l_target, gain_r_target;
+    /* the same sums before the clamp (pan included, EG1 not): the envelope
+     * joins them in dB, see voice_amp */
+    int32_t atten_l_hdb, atten_r_hdb;
     /* velocity + region/wsmp attenuation + 1200: fixed for the voice's life
      * (0x19bb9-0x19bcd); CC-driven terms NOT baked in here, see
      * voice_update_gain */
@@ -214,5 +217,10 @@ void voices_advance_lfo(uint32_t frames);
 /* recomputes gain_l/gain_r from atten_const_hdb plus live master/CC7/CC11/CC10
  * -- the ONLY place gain is computed */
 void voice_update_gain(Voice *v);
+
+/* gain for a pre-clamp attenuation sum with EG1's level added in dB before
+ * the ceiling clamp [A:0x18ff7]; env_hdb from voice_env_hdb */
+double voice_amp(int32_t atten_hdb, int32_t env_hdb);
+int32_t voice_env_hdb(double env_level);
 
 #endif /* VOICE_H */

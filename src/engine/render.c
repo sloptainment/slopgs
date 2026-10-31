@@ -77,8 +77,11 @@ static void render_voice(Voice *v, int16_t *out, uint32_t frames,
             v->gain_r = v->gain_r_target;
             /* steps this segment takes on the BASE_RATE grid */
             uint32_t steps = (seg + RESAMPLE_FACTOR - 1) / RESAMPLE_FACTOR;
-            v->amp_step_l = (env_end * v->gain_l - v->amp_l) / (double) steps;
-            v->amp_step_r = (env_end * v->gain_r - v->amp_r) / (double) steps;
+            int32_t env_hdb = voice_env_hdb(env_end);
+            v->amp_step_l = (voice_amp(v->atten_l_hdb, env_hdb) - v->amp_l) /
+                            (double) steps;
+            v->amp_step_r = (voice_amp(v->atten_r_hdb, env_hdb) - v->amp_r) /
+                            (double) steps;
             v->amp_sub = 0;
             v->amp_left = seg;
         }

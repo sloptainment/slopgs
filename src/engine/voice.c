@@ -429,8 +429,24 @@ void voice_update_gain(Voice *v)
         pan = 0;
     if (pan > 127)
         pan = 127;
-    v->gain_l_target = atten_to_gain(atten_hdb + g_table_lin[127 - pan]);
-    v->gain_r_target = atten_to_gain(atten_hdb + g_table_lin[pan]);
+    v->atten_l_hdb = atten_hdb + g_table_lin[127 - pan];
+    v->atten_r_hdb = atten_hdb + g_table_lin[pan];
+    v->gain_l_target = atten_to_gain(v->atten_l_hdb);
+    v->gain_r_target = atten_to_gain(v->atten_r_hdb);
+}
+
+int32_t voice_env_hdb(double env_level)
+{
+    // EG1 term of 0x18d28: -9600 at level 0, 0 at full scale
+    if (env_level <= 0.0)
+        return -9600;
+    double e = 2000.0 * rt_log10(env_level);
+    return e > -9600.0 ? (int32_t) e : -9600;
+}
+
+double voice_amp(int32_t atten_hdb, int32_t env_hdb)
+{
+    return atten_to_gain(atten_hdb + env_hdb);
 }
 
 void voices_update_modulation(void)
@@ -868,8 +884,9 @@ void voice_note_on(int channel, int note, int velocity)
 
     /* Prime the amplitude ramp (see the amp_left reset above). env_level is
      * final only now: 1.0 for an instant attack, 0.0 for a real one. */
-    v->amp_l = v->env_level * v->gain_l;
-    v->amp_r = v->env_level * v->gain_r;
+    int32_t env_hdb = voice_env_hdb(v->env_level);
+    v->amp_l = voice_amp(v->atten_l_hdb, env_hdb);
+    v->amp_r = voice_amp(v->atten_r_hdb, env_hdb);
 }
 
 void voice_note_off(int channel, int note)

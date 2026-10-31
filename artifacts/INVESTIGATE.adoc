@@ -15,25 +15,21 @@ Every entry has the same four fields: *Known* (what is settled, with VMAs),
 *Where* (code and tests). Delete an entry once it is closed; the closing
 assertion in `unit.c` is the record.
 
-Corpus baseline: *MEAN r 0.932, residual −32.98 dB*.
+Corpus baseline: *MEAN r 0.993, residual −42.25 dB*.
 
-[#i-ceiling-populations]
-== i-ceiling-populations: the per-voice gain ceiling splits the corpus (audible, 13.9 dB on one item)
+[#i-env-sum-residuals]
+== i-env-sum-residuals: five items 0.3–1.6 dB worse since EG1 joined the pre-clamp sum
 
-Known:: The ceiling (`TABLE[0]` = 4095/8192 of `0x1bfc0`, `0x18e09`) and the
-`+1200` at `0x19bcd` are both in the driver. With them, `41_sustain_decay_curve`
-sits at −37.1 dB; without the clamp it would be −51.1. Exactly its 3 notes with
-region attenuation 0 clamp. Raising the ceiling 0.75 dB recovers `41` but
-costs `27_gain_curves` 8.9 dB and `45_release_from_level` 15.8 dB, whose
-references (Sine `008:080`, region −314 hdB, velocity/CC7 127) do flat-top.
-Probe 50: slopgs's flat top sits 1.61 dB high, sub-knee levels 1.35–2.96 dB
-low. The two populations disagree by 0.7–1.1 dB, so no uniform level fixes
-both.
-Open:: Which term of the attenuation sum differs: region/wsmp attenuation
-(0 vs −314) or the velocity-table lookup at 100 vs 127.
-Settle by:: Term-by-term comparison of the engine's sum against
-`0x19b94`–`0x19c2a` on probe 50's sections.
-Where:: `voice.c` `voice_update_gain`, `atten_to_gain`; no test.
+Known:: EG1 now enters the attenuation sum in dB before the ceiling clamp
+(`voice_amp`, `0x19490`/`0x18ff7`; unit.c S6.4.5.2). Mean −39.56 → −42.25 dB
+and `41`, `doomdrum`, `onestop_extract`, `39` and `corridor` gained 15–29 dB,
+but residuals rose on `04_envelope` +1.4, `22_no_gs_reset` +1.6,
+`25_pan_law` +1.3, `19_prior_art` +0.9, `sine-gate` +0.8.
+Open:: Whether the 0.1 dB index step (`atten / 10`, truncating) on a decaying
+envelope is exact in the driver, or the engine's per-sample `env_level` feeds
+it at a different instant than `0x19490` samples EG1.
+Settle by:: Per-segment oracle gain on `04_envelope` against `voice_amp`.
+Where:: `voice.c` `voice_env_hdb`, `render.c` segment top; no test.
 
 [#i-release-floor]
 == i-release-floor: RELEASE_FLOOR_S has no counterpart in the driver ([F], audible)
@@ -168,26 +164,6 @@ Open:: Two Parts on one channel (doubled notes) and a flag following a later
 RCV CHANNEL change are not modeled.
 Settle by:: A probe that maps two Parts to one channel.
 Where:: `synth.c` `part_to_channel`; no test.
-
-[#i-high-sustain-decay]
-== i-high-sustain-decay: high-sustain instruments decay several dB in the reference
-
-Known:: `field/onestop_extract.mid` (Atmosphere, sustain 88.2%): the reference
-falls ~6 dB over 0.7–1.4 s; the decay model predicts < 1.1 dB. Decay-to-sustain
-times land within ~2× of probes 39/41.
-Open:: The mechanism; no authored parameter predicts which instruments do it.
-Settle by:: Isolated single-note captures of high-sustain patches.
-Where:: `voice.c` `ENV_DECAY`; no test.
-
-[#i-doomdrum]
-== i-doomdrum: drum tail 4.1–5.3 dB below the reference after every hit
-
-Known:: `tests/doomdrum.mid`: a step offset established by +0.10 s, flat
-after; slopes agree to 0.51 dB/s. Dominated by note 41 (Low Floor Tom, looped,
-sustain 0); pitch matches to +2.1 c.
-Open:: Where the level goes.
-Settle by:: Solo note 41, compare the attack segment.
-Where:: no test.
 
 [#i-cc11-gating]
 == i-cc11-gating: fast CC11 gating leaves silent gaps in the reference

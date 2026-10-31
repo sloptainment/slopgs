@@ -3871,6 +3871,29 @@ static void t_findings_live(void)
         voice_pool_reset();
     }
 
+    tap_diag("--- S6.4.5.2: EG1 attenuation joins the sum BEFORE the ceiling "
+             "clamp [A:0x19490],[A:0x18ff7] ---");
+    {
+        /* 0x19490 builds EG1's dB term (0x18d28) + LFO + CC7 + CC11 and
+         * 0x18ff7 adds it to the note-on sum before 0x18dea clamps, so a
+         * voice far above the knee stays at TABLE[0] while its envelope sits
+         * 6 dB down: the envelope is not a post-clamp multiplier. */
+        static int16_t s1[1] = {32767};
+        static Wave w1;
+        w1.sample_rate = (uint32_t) RENDER_RATE;
+        w1.samples = s1;
+        w1.sample_count = 1;
+        voice_pool_reset();
+        vo_render_fixture(&g_voices[0], &w1, 50, 0);
+        g_voices[0].env_level = g_voices[0].env_sustain_level = 0.5;
+        static int16_t buf[2];
+        render_frames(buf, 1);
+        is_int(buf[0], vo_apply_gain(32767),
+               "S6.4.5.2 sum 100000 hdB with EG1 -6 dB still renders at "
+               "TABLE[0]");
+        voice_pool_reset();
+    }
+
     tap_diag("--- S3.3.3: CentsToRatio clamps the note-on sum to +-4800; live "
              "bend multiplies outside it [A:0x18e2c] ---");
     {
