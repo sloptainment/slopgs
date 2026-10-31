@@ -160,14 +160,20 @@ typedef struct Voice
     uint32_t env_sub;
 
     /* EG2, the PITCH envelope [A:0x15838]: EG2 to any destination other than
-     * PITCH is ignored */
-    EnvStage eg2_stage;
-    double eg2_level;       /* 0..1 */
-    double eg2_attack_step; /* linear increment per modulation block */
-                            /* multiplicative approach-to-sustain, per block */
-    double eg2_decay_coef;
-    double eg2_release_coef;  /* multiplicative approach-to-zero, per block */
-    double eg2_sustain_level; /* 0..1 */
+     * PITCH is ignored. Linear in permille, BASE_RATE frames: attack, decay
+     * (already scaled by 1000-sustain), release, sustain permille; eg2_off is
+     * the note-off time or -1 while held. eg2_t counts RENDER_RATE frames
+     * since the voice began; eg2_cents is the pitch term as of the end of the
+     * current segment (render.c). */
+    uint32_t eg2_atk, eg2_dec, eg2_rel;
+    int32_t eg2_sus;
+    int64_t eg2_off;
+    uint64_t eg2_t;
+    int32_t eg2_cents;
+    /* EG2's share of the step still to land this segment, its stair increment
+     * and accumulator (Q8): the mixer adds (S1-S0)*K/N every K frames
+     * [A:0x190c8, 0x1a41d] */
+    int32_t eg2_left, eg2_inc, eg2_acc;
     /* connection scale; 0 = no EG2->pitch (the default) */
     double eg2_depth_cents;
 
@@ -238,6 +244,15 @@ int32_t voice_env_hdb(double env_level);
 /* Frames between phase-step refreshes in a segment of `seg` BASE_RATE frames,
  * given the largest attenuation change (hdB) and the pitch change (cents)
  * since the previous segment [A:0x19077-0x190a2] */
+/* EG2's pitch term at t BASE_RATE frames, and the frames from t to its next
+ * breakpoint, both as the driver reads them [A:0x18d58, 0x18a7a] */
+int32_t voice_eg2_cents(const Voice *v, uint64_t t);
+uint32_t voice_eg2_frames_to_change(const Voice *v, uint64_t t);
+/* the segment about to start is `frames` long: read EG2 at its end */
+void voice_eg2_segment(Voice *v, uint32_t frames);
+/* RENDER_RATE frames to EG2's next breakpoint */
+uint32_t voice_eg2_render_frames_to_change(const Voice *v);
+
 uint32_t voice_stair_frames(uint32_t seg, int32_t d_att, int32_t d_cents);
 
 #endif /* VOICE_H */

@@ -68,6 +68,10 @@ static void render_voice(Voice *v, int16_t *out, uint32_t frames,
             uint32_t next = voice_env_frames_to_change(v);
             if (next < seg)
                 seg = next;
+            // ...nor past EG2's next breakpoint [A:0x19619]
+            next = voice_eg2_render_frames_to_change(v);
+            if (next < seg)
+                seg = next;
             /* ...and never past this service block's end [A:0x196de],
              * DSP-advance region [A:0x196cd]-[A:0x196f0]: a segment that ran
              * past it would outrun undispatched events. */
@@ -75,6 +79,16 @@ static void render_voice(Voice *v, int16_t *out, uint32_t frames,
                 seg = block_left;
             if (seg == 0)
                 seg = 1;
+
+            /* the pitch is read at the segment end [A:0x195a2]; the mixer
+               starts from the last segment's end value, so what stairs left
+               over lands now (0x19444) */
+            v->phase_step = (uint32_t) ((int32_t) v->phase_step + v->eg2_left);
+            int32_t debt = v->step_debt;
+            voice_eg2_segment(v, seg);
+            voice_update_pitch(v);
+            int32_t eg2_share = v->step_debt - debt;
+            v->step_debt = debt;
 
             double env_end = v->env_level;
             for (uint32_t k = 0; k < seg; k++)
@@ -106,6 +120,10 @@ static void render_voice(Voice *v, int16_t *out, uint32_t frames,
                 v->stair_k = steps;
             v->stair_left = v->stair_k;
             v->stair_sub = 0;
+            v->eg2_left = eg2_share;
+            v->eg2_inc = (int32_t) ((int64_t) eg2_share * v->stair_k * 256 /
+                                    (int64_t) steps);
+            v->eg2_acc = 0;
             v->prev_att_l = att_l;
             v->prev_att_r = att_r;
             v->prev_mod_cents = v->mod_cents;
@@ -119,6 +137,12 @@ static void render_voice(Voice *v, int16_t *out, uint32_t frames,
             v->phase_step = (uint32_t) ((int32_t) v->phase_step + v->step_debt);
             v->step_debt = 0;
             v->stair_left = v->stair_k;
+            // EG2 lands in equal stairs of its share, not at once
+            v->eg2_acc += v->eg2_inc;
+            int32_t d = v->eg2_acc >> 8;
+            v->eg2_acc -= d * 256;
+            v->phase_step = (uint32_t) ((int32_t) v->phase_step + d);
+            v->eg2_left -= d;
         }
 
         /* phase step is a ramp accumulator held between refreshes (0x18fba),
@@ -187,6 +211,7 @@ static void render_voice(Voice *v, int16_t *out, uint32_t frames,
             }
         }
         v->phase_pos = pos;
+        v->eg2_t++;
     }
 }
 

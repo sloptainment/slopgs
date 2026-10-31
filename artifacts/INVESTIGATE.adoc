@@ -66,6 +66,8 @@ The mixer ramps gain linearly in amplitude to the value at the segment end
 (`0x18fba`). The buffer is the caller's KS buffer (`0x181fa`). Pitch is
 not a smooth ramp: the step is held and refreshed in stairs
 (<<i-stair-cap>>).
+EG2's bound (`0x19619`) is modelled (`voice_eg2_frames_to_change`); the
+LFO's and the cap are not.
 Open:: Whether the per-voice minimum also fixes the
 decay-dominated items: a fixed 512 cost `08_reverb` +9.5 and `03_velocity`
 +7.1 dB (sweep at the old −31 dB baseline: 128 −31.18, 256 −31.14,
@@ -139,8 +141,20 @@ A/B on the capped build, 52 items: mean −42.31 → −42.45, `52_eg2_pitch`
 52 −19.99, 51 −24.16 (`06_modwheel` −40.66 → −32.98): an N of 256 freezes
 the step where the driver's N (459 on an LFO voice, 1024 at the oracle's
 buffer) would not.
-Open:: How much of the remaining −46 frames and of 51's loss is N. Whether
-the XP buffer's N changes the lag the references show.
+The mixer does not jump to the new step: it adds (S1−S0)·K·256/N (Q8) every
+K frames, S0 being the previous segment's end value and S1 this segment's
+(`0x190c8`, `0x1a41d`), and the next segment starts from S1 whatever landed
+(`0x19444`). Shipped for EG2 only, with EG2 read at the segment end and
+bounding the segment as `0x18a7a` does (attack, then the decay at its half and
+end): 051 key 48's +219 c ramp now lands within 0.08 frame of the oracle's
+(was 5.7), mean −45.02 → −45.49, `52_eg2_pitch` −44.59 → −49.71. Four items
+lost ≤0.29 dB (`42_multitrack_same_tick`, `HueArme-Weekend`,
+`CrystalOscillator`, `11_drums`), cause unconfirmed.
+Open:: The LFO's and the bend's share of the step still lands whole at the
+first stair and is read at the chunk start, not the segment end. How much of
+the remaining −46 frames and of 51's loss is N. Whether the XP buffer's N
+changes the lag the references show. Whether a missing EG2 release time
+(engine: 0, so the pitch drops at once) is what the driver does.
 Settle by:: Give each voice its own segment N (<<i-segment-length>>), drop
 the cap, re-run the A/B above.
 Where:: `render.c` `stair_k`; `voice.c` `voice_stair_frames`,
@@ -237,24 +251,6 @@ Open:: Whether `rate_parity.py` should compare by 2:1 decimation, which
 keeps ×1's aliasing and passes all 70 exactly, or keep soxr and exempt these.
 Settle by:: A policy decision; no measurement is outstanding.
 Where:: `artifacts/rate_parity.py` `render()`.
-
-[#i-start-offset]
-== i-start-offset: 051 Synth Strings 2 sounds 4.35 frames ahead of the oracle
-
-Known:: One note (key 48, vel 100, held 3 s, no controllers): partials agree
-to 0.001 Hz and amplitude to 0.1 dB, but the render leads in phase by
-9.3° per harmonic (h1–h4: 9.3, 18.6, 27.8, 36.9°), a pure 0.197 ms
-(4.35-frame) shift, constant from the first audible 5 ms. First non-zero
-frames differ by 1 (11033 vs 11034). Region 0–52, wave 388, unity 48,
-fine +3, ratio 1.0017, loop 169–10805. 080 at ratio 1.0029 matches at
-−38.6 dB, so the shift is not generic.
-Open:: Whether the driver reads from later in the sample or starts EG1
-earlier relative to the read (first-non-zero onset cannot separate them under
-a slow attack); what sets 051 apart from 080.
-Settle by:: Find where the driver seeds the voice's sample position and starts
-EG1 at note-on; diff the oracle's per-sample attack on 051 key 48 against the
-raw wave 388 data.
-Where:: `voice.c` `voice_note_on` (`phase_pos = 0`); no test.
 
 [#i-cosmetic]
 == i-cosmetic: driver unknowns with no output consequence for gm.dls

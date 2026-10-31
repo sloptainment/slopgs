@@ -1399,7 +1399,7 @@ static void vo_setup_bare_active(Voice *v, int channel, int note)
     v->env_stage = ENV_SUSTAIN;
     v->env_level = 1.0;
     v->env_sustain_level = 1.0;
-    v->eg2_stage = ENV_IDLE;
+    v->eg2_depth_cents = 0.0;
     v->age = ++g_voice_age_counter;
 }
 
@@ -1589,8 +1589,8 @@ static void t_voice(void)
         for (int i = 0; i < NUM_VOICES; i++)
         {
             vo_setup_bare_active(&g_voices[i], 1, i);
-            /* non-IDLE, so a release transition is observable */
-            g_voices[i].eg2_stage = ENV_SUSTAIN;
+            /* held, so a release transition is observable */
+            g_voices[i].eg2_off = -1;
         }
         voice_topup_tick(1u << 30);
         int marked_ok = 1, unmarked_ok = 1;
@@ -1614,7 +1614,7 @@ static void t_voice(void)
                 "S5.6/S3.8.2: fast-release from full level clamps to "
                 "sampleRate/70 samples (14.29ms @ 22050Hz), not the "
                 "unreconciled 70ms [M] figure");
-        ok(g_voices[0].eg2_stage == ENV_RELEASE,
+        ok(g_voices[0].eg2_off >= 0,
            "S5.6/Part7: EG2 (pitch envelope) also transitions to release on "
            "the fast-release path, same as ordinary note-off");
         voice_pool_reset();
@@ -2228,7 +2228,7 @@ static void vo_render_fixture(Voice *v, Wave *w, int32_t sample_end_s,
     v->env_stage = ENV_SUSTAIN;
     v->env_level = 1.0;
     v->env_sustain_level = 1.0;
-    v->eg2_stage = ENV_IDLE;
+    v->eg2_depth_cents = 0.0;
     /* forces voice_update_gain's ceiling clamp regardless of channel/pan state
      */
     v->atten_const_hdb = 100000;
@@ -4145,9 +4145,13 @@ static void t_findings_live(void)
                    "4..512 (N=%u dAtt=%d dCents=%d)",
                    (unsigned) rows[i].n, (int) rows[i].da, (int) rows[i].dc);
 
-        /* EG2 jumps +1200 c on the first block: 4096 -> 8192. The step is
-           held for K-1 = 3 frames (K=4: the attenuation jumps from 0), and the
-           first advance with the new step is frame 3's */
+        /* EG2 jumps +1200 c on the first segment: 4096 -> 8192 over N=8
+           frames, K=4 (the attenuation jumps from 0). The mixer adds
+           (S1-S0)*K/N every K frames (0x190c8, 0x1a41d): half the jump lands
+           3 frames in, the rest 4 frames later; the first advance with a new
+           step is the landing frame's. Impulse timing on 051 key 48's +219 c
+           EG2 matches the oracle to 0.08 frame this way (a single jump at
+           K-1: 12 frames early) */
         static int16_t ramp[64];
         for (int i = 0; i < 64; i++)
             ramp[i] = (int16_t) (i * 256);
@@ -4161,24 +4165,60 @@ static void t_findings_live(void)
         vo_render_fixture(v, &w, 60, 0);
         v->base_ratio_q12 = 4096;
         v->phase_step = v->phase_step_target = 1u << 12;
-        v->eg2_stage = ENV_ATTACK;
-        v->eg2_level = 0.0;
-        v->eg2_attack_step = 1.0;
-        v->eg2_sustain_level = 1.0;
+        v->eg2_atk = v->eg2_dec = 0;
+        v->eg2_sus = 1000;
+        v->eg2_off = -1;
         v->eg2_depth_cents = 1200.0;
         static int16_t buf[8 * 2];
         render_frames(buf, 8);
-        static const int idx[8] = {0, 1, 2, 3, 5, 7, 9, 11};
+        static const int pos256[8] = {0, 256, 512, 768, 1152, 1536, 1920, 2304};
         int stairs_ok = 1;
         for (int i = 0; i < 8; i++)
-            if (buf[i * 2] != (int16_t) vo_apply_gain(idx[i] * 256))
+            if (buf[i * 2] != (int16_t) vo_apply_gain(pos256[i]))
                 stairs_ok = 0;
         ok(stairs_ok,
-           "an EG2 pitch jump reaches phase_step K-1 frames into the segment, "
-           "not at its start (oracle 122 key 36: +2.28 c sharp, lag K/2 on "
-           "average)");
+           "an EG2 pitch jump reaches phase_step in K-frame stairs of "
+           "(S1-S0)*K/N, the first K-1 frames into the segment");
         voice_pool_reset();
         synth_construct();
+    }
+
+    tap_diag("--- EG2 is exact linear permille, read at segment ends, and "
+             "bounds the segment [A:0x18a7a] ---");
+    {
+        /* gdb on the oracle, 051 Synth Strings 2 key 48 vel 100 (EG2->pitch
+           +219 c, attack 212 frames, decay 238, sustain 0): the pitch is read
+           at t = 212, 331, 450 and returns 219, 109, 0 c, so the segments are
+           212, 119, 119 frames: the attack, then decay>>1, then what is left
+           (0x18b98-0x18bf6) */
+        voice_pool_reset();
+        Voice *v = &g_voices[0];
+        v->eg2_depth_cents = 219.0;
+        v->eg2_atk = 212;
+        v->eg2_dec = 238;
+        v->eg2_sus = 0;
+        v->eg2_rel = 0;
+        v->eg2_off = -1;
+        is_int(voice_eg2_cents(v, 212), 219, "EG2 at the end of its attack");
+        is_int(voice_eg2_cents(v, 331), 109,
+               "EG2 halfway down the decay: 500 permille of 219 c");
+        is_int(voice_eg2_cents(v, 450), 0, "EG2 at the sustain level");
+        is_int(voice_eg2_frames_to_change(v, 0), 212,
+               "the segment from note-on ends with the attack");
+        is_int(voice_eg2_frames_to_change(v, 212), 119,
+               "a decay is read at its half before its end");
+        is_int(voice_eg2_frames_to_change(v, 331), 119, "...then at its end");
+        ok(voice_eg2_frames_to_change(v, 450) >= 44100,
+           "sustain bounds nothing (0xac44 frames)");
+
+        /* 0x18c27: release falls linearly from the level at note-off over the
+           release time, then 0 */
+        v->eg2_rel = 100;
+        v->eg2_off = 300;
+        is_int(voice_eg2_cents(v, 350), 68,
+               "release is 631 permille (level at note-off) * 50/100 of 219 c");
+        is_int(voice_eg2_cents(v, 400), 0, "release ends at 0");
+        voice_pool_reset();
     }
 }
 

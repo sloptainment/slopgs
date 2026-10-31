@@ -54,8 +54,10 @@ void voice_pool_reset(void)
         v->env_stage = ENV_IDLE;
         v->env_level = 0.0;
         v->env_decay_samples_left = 0;
-        v->eg2_stage = ENV_IDLE;
-        v->eg2_level = 0.0;
+        v->eg2_off = -1;
+        v->eg2_t = 0;
+        v->eg2_cents = 0;
+        v->eg2_left = v->eg2_inc = v->eg2_acc = 0;
         v->eg2_depth_cents = 0.0;
         v->held = 0;
         v->sustain_deferred = 0;
@@ -178,90 +180,83 @@ static double exp_coef_scaled(double seconds, double mult)
     return rt_pow(10.0, (-(ENV_SPAN_DB / 20.0) * mult) / samples);
 }
 
-#define EG2_BLOCK_FRAMES LFO_UPDATE_FRAMES
-#define EG2_BLOCK_RATE ((double) RENDER_RATE / (double) EG2_BLOCK_FRAMES)
-
-/* EG2_LINEAR_SEGMENTS: the pitch EG moves linearly in cents, not
- * exponentially (probe 34's spectrogram; -2.73 dB on 26_other_gains) */
-#ifndef EG2_LINEAR_SEGMENTS
-#define EG2_LINEAR_SEGMENTS 1
-#endif
-
-/* "Close enough" threshold for snapping a decaying/releasing envelope level to
- * its target (sustain level or zero) instead of asymptoting forever. */
-#define ENV_SNAP_EPSILON 0.0005
-
-static double eg2_coef(double seconds)
+/* [A:0x18a7a], flag 0: linear in permille. Release falls from the level at
+ * note-off (the t == off evaluation) to 0 over eg2_rel. */
+static int32_t eg2_permille(const Voice *v, int64_t t)
 {
-    if (seconds <= 0.0)
-        return 0.0;
-    double blocks = seconds * EG2_BLOCK_RATE;
-    if (blocks < 1.0)
-        blocks = 1.0;
-#if EG2_LINEAR_SEGMENTS
-    /* linear: fraction of full span per block */
-    return 1.0 / blocks;
-#else
-    return rt_pow(10.0, -5.0 / blocks); /* EG1's exponential calibration */
-#endif
+    if (v->eg2_off >= 0 && t > v->eg2_off)
+    {
+        int64_t r = t - v->eg2_off;
+        if (r >= (int64_t) v->eg2_rel)
+            return 0;
+        return (int32_t) (eg2_permille(v, v->eg2_off) *
+                          ((int64_t) v->eg2_rel - r) / (int64_t) v->eg2_rel);
+    }
+    if (t < (int64_t) v->eg2_atk)
+        return (int32_t) (t * 1000 / (int64_t) v->eg2_atk);
+    t -= v->eg2_atk;
+    if (t < (int64_t) v->eg2_dec)
+        return (int32_t) (1000 -
+                          (1000 - v->eg2_sus) * t / (int64_t) v->eg2_dec);
+    return v->eg2_sus;
 }
 
-static int32_t voice_step_eg2(Voice *v)
+/* [A:0x18d58] depth * permille / 1000, clamped like the other pitch terms */
+int32_t voice_eg2_cents(const Voice *v, uint64_t t)
 {
     if (v->eg2_depth_cents == 0.0)
         return 0;
-    switch (v->eg2_stage)
+    int32_t c =
+        (int32_t) v->eg2_depth_cents * eg2_permille(v, (int64_t) t) / 1000;
+    if (c > CENTS_CLAMP)
+        c = CENTS_CLAMP;
+    if (c < -CENTS_CLAMP)
+        c = -CENTS_CLAMP;
+    return c;
+}
+
+/* a decay or release is read at its quarter, half and end, each only if 100
+ * frames remain before it [A:0x18b98-0x18bf6] */
+static uint32_t eg2_span_bound(int64_t span, int64_t t)
+{
+    if (t < (span >> 2) - 100)
+        return (uint32_t) ((span >> 2) - t);
+    if (t < (span >> 1) - 100)
+        return (uint32_t) ((span >> 1) - t);
+    return (uint32_t) (span - t);
+}
+
+uint32_t voice_eg2_frames_to_change(const Voice *v, uint64_t t_)
+{
+    int64_t t = (int64_t) t_;
+    if (v->eg2_off >= 0 && t > v->eg2_off)
     {
-        case ENV_ATTACK:
-            v->eg2_level += v->eg2_attack_step;
-            if (v->eg2_level >= 1.0)
-            {
-                v->eg2_level = 1.0;
-                v->eg2_stage =
-                    (v->eg2_decay_coef > 0.0 && v->eg2_decay_coef < 1.0)
-                        ? ENV_DECAY
-                        : ENV_SUSTAIN;
-            }
-            break;
-        case ENV_DECAY:
-#if EG2_LINEAR_SEGMENTS
-            v->eg2_level -= v->eg2_decay_coef * (1.0 - v->eg2_sustain_level);
-#else
-            v->eg2_level =
-                v->eg2_sustain_level +
-                (v->eg2_level - v->eg2_sustain_level) * v->eg2_decay_coef;
-#endif
-            if (v->eg2_level - v->eg2_sustain_level < ENV_SNAP_EPSILON)
-            {
-                v->eg2_level = v->eg2_sustain_level;
-                v->eg2_stage = ENV_SUSTAIN;
-            }
-            break;
-        case ENV_SUSTAIN:
-            v->eg2_level = v->eg2_sustain_level;
-            break;
-        case ENV_RELEASE:
-#if EG2_LINEAR_SEGMENTS
-            v->eg2_level -= v->eg2_release_coef;
-#else
-            v->eg2_level *= v->eg2_release_coef;
-#endif
-            if (v->eg2_level < ENV_SNAP_EPSILON)
-            {
-                v->eg2_level = 0.0;
-                v->eg2_stage = ENV_IDLE;
-            }
-            break;
-        case ENV_IDLE:
-        default:
-            return 0;
+        int64_t r = t - v->eg2_off;
+        return r < (int64_t) v->eg2_rel ? eg2_span_bound(v->eg2_rel, r)
+                                        : ENV_NO_CHANGE;
     }
-    double c = v->eg2_depth_cents * v->eg2_level;
-    if (c > (double) CENTS_CLAMP)
-        c = (double) CENTS_CLAMP;
-    if (c < -(double) CENTS_CLAMP)
-        c = -(double) CENTS_CLAMP;
-    return (int32_t) c;
+    if (t < (int64_t) v->eg2_atk)
+        return (uint32_t) (v->eg2_atk - t);
+    t -= v->eg2_atk;
+    if (t < (int64_t) v->eg2_dec)
+        return eg2_span_bound(v->eg2_dec, t);
+    // 0xac44
+    return 44100;
+}
+
+uint32_t voice_eg2_render_frames_to_change(const Voice *v)
+{
+    if (v->eg2_depth_cents == 0.0)
+        return ENV_NO_CHANGE;
+    uint32_t n = voice_eg2_frames_to_change(v, v->eg2_t / RESAMPLE_FACTOR);
+    if (n > ENV_NO_CHANGE / RESAMPLE_FACTOR)
+        return ENV_NO_CHANGE;
+    return n * RESAMPLE_FACTOR - (uint32_t) (v->eg2_t % RESAMPLE_FACTOR);
+}
+
+void voice_eg2_segment(Voice *v, uint32_t frames)
+{
+    v->eg2_cents = voice_eg2_cents(v, (v->eg2_t + frames) / RESAMPLE_FACTOR);
 }
 
 /* LFO output [A:0x18992],[A:0x189e4]: (CC1*cc1_depth/127 + inherent) *
@@ -358,7 +353,7 @@ void voice_update_pitch(Voice *v)
                         /* `[A:0x189e4]` */
                         + voice_lfo_cents(v)
                         /* `[A:0x15838]` */
-                        + voice_step_eg2(v);
+                        + (v->eg2_depth_cents == 0.0 ? 0 : v->eg2_cents);
     uint64_t raw =
         (uint64_t) v->wave->sample_rate * (uint64_t) v->base_ratio_q12;
     raw = (raw * (uint64_t)(uint32_t) cents_to_ratio_q12(mod_cents)) >> 12;
@@ -602,8 +597,8 @@ static void start_release(Voice *v, int fast)
     v->env_release_coef = exp_coef_scaled(rel_s, RELEASE_RATE_MULT);
     /* EG2 releases on both note-off paths; the fast-release clamp is
      * amplitude-only (0x19b16 vs 0x19b28) */
-    if (v->eg2_stage != ENV_IDLE)
-        v->eg2_stage = ENV_RELEASE;
+    if (v->eg2_off < 0)
+        v->eg2_off = (int64_t) (v->eg2_t / RESAMPLE_FACTOR);
 }
 
 /* [F] TOPUP_INTERVAL_FRAMES: the driver tops up once per service call
@@ -765,6 +760,11 @@ void voice_note_on(int channel, int note, int velocity)
     /* LFO clock starts at note-on (0x19c48); advanced only by
      * voices_advance_lfo */
     v->lfo_elapsed = 0;
+    // EG2 reaches the pitch at the first segment (render.c), not at note-on
+    v->eg2_off = -1;
+    v->eg2_t = 0;
+    v->eg2_cents = 0;
+    v->eg2_left = v->eg2_inc = v->eg2_acc = 0;
 
     voice_update_pitch(v);
     /* New note: plays at the true target from sample 0, no glide-in from
@@ -889,28 +889,22 @@ void voice_note_on(int channel, int note, int velocity)
     /* EG2 [A:0x15838]: same segment structure as EG1 but scales
      * eg2_to_pitch_cents; zero depth (the default) leaves it inert */
     v->eg2_depth_cents = (double) r->artic->eg2_to_pitch_cents;
-    v->eg2_sustain_level = (double) r->artic->eg2_sustain_permille / 1000.0;
-    if (v->eg2_sustain_level < 0.0)
-        v->eg2_sustain_level = 0.0;
-    if (v->eg2_sustain_level > 1.0)
-        v->eg2_sustain_level = 1.0;
-    double eg2_atk_s = timecents_to_seconds(r->artic->eg2_attack_tc);
-    double eg2_dec_s = timecents_to_seconds(scale_tc_by_source(
-        r->artic->eg2_decay_tc, r->artic->eg2_decay_kf_tc, note));
-    if (eg2_atk_s <= 0.0)
-    {
-        v->eg2_level = 1.0;
-        v->eg2_stage = (eg2_dec_s > 0.0) ? ENV_DECAY : ENV_SUSTAIN;
-    }
-    else
-    {
-        v->eg2_level = 0.0;
-        v->eg2_stage = ENV_ATTACK;
-        v->eg2_attack_step = 1.0 / (eg2_atk_s * EG2_BLOCK_RATE);
-    }
-    v->eg2_decay_coef = eg2_coef(eg2_dec_s);
-    v->eg2_release_coef =
-        eg2_coef(timecents_to_seconds(r->artic->eg2_release_tc));
+    int32_t eg2_sus = r->artic->eg2_sustain_permille;
+    if (eg2_sus < 0)
+        eg2_sus = 0;
+    if (eg2_sus > 1000)
+        eg2_sus = 1000;
+    v->eg2_sus = eg2_sus;
+    // [A:0x19968] scales the decay by 1000-sustain, as for EG1
+    v->eg2_atk =
+        (uint32_t) (timecents_to_seconds(r->artic->eg2_attack_tc) * BASE_RATE);
+    v->eg2_dec = (uint32_t) (timecents_to_seconds(scale_tc_by_source(
+                                 r->artic->eg2_decay_tc,
+                                 r->artic->eg2_decay_kf_tc, note)) *
+                             BASE_RATE) *
+                 (uint32_t) (1000 - eg2_sus) / 1000;
+    v->eg2_rel =
+        (uint32_t) (timecents_to_seconds(r->artic->eg2_release_tc) * BASE_RATE);
 
     /* Prime the amplitude ramp (see the amp_left reset above). env_level is
      * final only now: 1.0 for an instant attack, 0.0 for a real one. */
