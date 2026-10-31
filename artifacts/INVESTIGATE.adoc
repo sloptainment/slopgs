@@ -212,6 +212,56 @@ keeps ×1's aliasing and passes all 70 exactly, or keep soxr and exempt these.
 Settle by:: A policy decision; no measurement is outstanding.
 Where:: `artifacts/rate_parity.py` `render()`.
 
+[#i-start-offset]
+== i-start-offset: 051 Synth Strings 2 sounds 4.35 frames ahead of the oracle
+
+Known:: One note (key 48, vel 100, held 3 s, no controllers): partials agree
+to 0.001 Hz and amplitude to 0.1 dB, but the render leads in phase by
+9.3° per harmonic (h1–h4: 9.3, 18.6, 27.8, 36.9°), a pure 0.197 ms
+(4.35-frame) shift, constant from the first audible 5 ms. First non-zero
+frames differ by 1 (11033 vs 11034). Region 0–52, wave 388, unity 48,
+fine +3, ratio 1.0017, loop 169–10805. 080 at ratio 1.0029 matches at
+−38.6 dB, so the shift is not generic.
+Open:: Whether the driver reads from later in the sample or starts EG1
+earlier relative to the read (first-non-zero onset cannot separate them under
+a slow attack); what sets 051 apart from 080.
+Settle by:: Find where the driver seeds the voice's sample position and starts
+EG1 at note-on; diff the oracle's per-sample attack on 051 key 48 against the
+raw wave 388 data.
+Where:: `voice.c` `voice_note_on` (`phase_pos = 0`); no test.
+
+[#i-low-ratio-pitch]
+== i-low-ratio-pitch: 122 Seashore plays ~2.3 c sharp and 17–21 frames late
+
+Known:: One note (key 36, held 3 s, no bend): the render's content runs
+ahead of the oracle linearly, 85 frames over 64 512 (+2.28 c), and the drift
+reverses after note-off. First non-zero frame 11287 vs 11266 (+21; +17 with
+a +40 c bend). Region 0–127, wave 350, unity 70, fine +44, ratio 0.1439 =
+589.49 in Q12, where 1 LSB is 2.94 c.
+Open:: Whether the error is the step's rounding (2.28 c is not a whole LSB);
+the cause of the late onset; why the drift reverses in release.
+Settle by:: Trace the driver's phase-step arithmetic (`0x195a2` and callees)
+against `voice_update_pitch`; probe key 36 across fine tunes and check whether
+the error tracks Q12 rounding.
+Where:: `voice.c` `voice_update_pitch` (`raw / BASE_RATE` truncates,
+`base_ratio_q12`); no test.
+
+[#i-mix-saturation]
+== i-mix-saturation: the render pins to the rail 4× as often as the oracle in overload
+
+Known:: A dense 12-channel mix: 25 516 clipped samples vs 6 598, while
+each channel solo clips alike (496 vs 480 on the loudest). Where the sum of
+the oracle's 12 solo renders exceeds int16, the oracle's full mix sits at the rail 13.5%
+of the time (median |x| 32 285, no sign flips); the render 55.8%. Both
+saturate per voice (`sat_add_i16`; MMX variant `0x1a360`), so the result
+depends on accumulation order. Residual share −32 dB of the −13 dB total.
+Open:: The driver's voice accumulation order; whether it saturates per voice,
+per segment or on a wider accumulator.
+Settle by:: Trace the voice loop that calls `0x19644` from `0x130d3` for its
+order; read `0x1a360`'s accumulate.
+Where:: `render.c` `render_frames` (loops `g_voices` by index),
+`sat_add_i16`; no test.
+
 [#i-cosmetic]
 == i-cosmetic: driver unknowns with no output consequence for gm.dls
 
