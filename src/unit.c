@@ -3970,12 +3970,11 @@ static void t_findings_live(void)
         double want =
             pow(10.0,
                 ((double) g_table_envshape[idx] / 1000.0 - 1.0) * 96.0 / 20.0);
-        todo_ok(fabs(v->env_level - want) < 1e-9,
-                "ENV_ATTACK_TABLE_C=1 measured -39.56 vs -39.58 dB corpus "
-                "mean (09_chorus +0.62 dB worse), tonal long attacks 2-5 dB "
-                "better -- not shipped, INVESTIGATE.adoc#i-attack-quantize",
-                "S3.4.2 attack level = TableC[(elapsed*1000/attack)/5] on the "
-                "96 dB scale");
+        ok(fabs(v->env_level - want) < 1e-9,
+           "S3.4.2 attack level = TableC[(elapsed*1000/attack)/5] on the "
+           "96 dB scale (oracle waveform residual, note 60 held 3 s: 101 "
+           "-39.0 -> -43.5 dB, 89 -42.3 -> -47.3; 09_chorus 0-0.1 s -34.0 -> "
+           "-41.6)");
         voice_pool_reset();
     }
 

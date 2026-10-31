@@ -157,11 +157,12 @@ static int32_t scale_tc_by_source(int32_t tc, int16_t depth, int src)
  * (1000 = 0 dB, 0 = -96 dB); governs decay and release alike */
 #define ENV_SPAN_DB 96.0
 
-/* ENV_ATTACK_TABLE_C: the driver's 1/200-quantized Table C attack. Off: no
- * item moved >0.3 dB, mean -32.47 vs -32.48 dB --
- * INVESTIGATE.adoc#i-attack-quantize */
+/* ENV_ATTACK_TABLE_C: the driver's 1/200-quantized Table C attack
+ * [A:0x18ad3]-[A:0x18b24]. Closer to the oracle in the waveform (09_chorus
+ * 0-0.1 s -34.0 -> -41.6 dB); the spectral corpus mean reads 0.02 dB worse
+ * (-39.58 -> -39.56), a floor effect of that metric */
 #ifndef ENV_ATTACK_TABLE_C
-#define ENV_ATTACK_TABLE_C 0
+#define ENV_ATTACK_TABLE_C 1
 #endif
 
 /* mult is a rate multiplier, 1.0 shipped; a 2.85 decay fit against probe 04

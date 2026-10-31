@@ -100,25 +100,17 @@ Settle by:: Trace readers of `device+0x10`, `+0x188`, `+0x1a0`; trace
 Where:: `voice.c` `TOPUP_INTERVAL_FRAMES`, `voice_step_envelope`; unit.c TODOs
 `S5.4 top-up cadence value`, `S3.4.1/S3.4.2 envelope update cadence`.
 
-[#i-attack-quantize]
-== i-attack-quantize: attack is not quantized through Table C ([F] by default)
+[#i-applause-attack]
+== i-applause-attack: 126 Applause's attack sits 7% above linear in the oracle
 
-Known:: The driver's attack level is `TableC[(elapsed*1000/attack)/5]`
-(`0x18ad3`–`0x18b24`), linear in amplitude in 1/200 steps (Table C is
-`1000 + 10000·log10(x²)/96`, `x = i/200`). `ENV_ATTACK_TABLE_C=1` implements
-it (its segment length is the attack time left, not `(1−level)/step`; with
-that, 119 Reverse Cymbal no longer cuts early). A/B against the oracle, note
-60 held 3 s, waveform residual `off → on`: 101 Goblin −39.0 → −43.5 dB,
-89 Pad 2 −42.3 → −47.3, 49 −38.4 → −41.0, 50 −44.1 → −46.0, 95 −37.0 → −38.1,
-119 −33.4 → −37.2; 126 Applause −31.2 → −30.0 (the oracle sits 7% above
-linear there, `on` 1% below). Corpus mean −39.58 (off) vs −39.56 (on); no
-item moved more than 0.62 dB (09_chorus), and shifting `elapsed` by 1 or 2
-samples leaves the mean at −39.56. Not shipped, by the mean-regression rule.
-Open:: Why short attacks score slightly worse with the driver's own formula
-(the segment edges, <<i-segment-length>>, are the suspect); why 126 sits above
-linear.
-Settle by:: Retire <<i-segment-length>>, then flip the flag and re-score.
-Where:: `voice.c` `ENV_ATTACK_TABLE_C`; unit.c TODO `S3.4.2 attack level`.
+Known:: With the Table C attack (`0x18ad3`-`0x18b24`) on, note 60 held 3 s
+reads -31.2 -> -30.0 dB against the oracle on 126: the oracle's attack is 7%
+above linear there, the render 1% below.
+Open:: Why this patch alone deviates; it may be a different level source
+rather than the attack.
+Settle by:: Dump the oracle's 126 attack level per sample and compare with
+Table C at the same `elapsed`.
+Where:: `voice.c` `ENV_ATTACK_TABLE_C`.
 
 [#i-bend-ramp]
 == i-bend-ramp: pitch-bend ramp duration 320 frames vs measured 448–512 ([F])
