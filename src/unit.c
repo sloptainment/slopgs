@@ -2443,6 +2443,34 @@ static void t_render(void)
                per_voice, wide_equiv);
         }
         voice_pool_reset();
+
+        /* round 4: accumulation order is newest-first, not pool index. The
+         * driver pushes a new voice at the head of the active list
+         * (0x12ffe-0x1300c) and Mix walks it from the head (0x130b4-0x130bc,
+         * 0x13106), each voice paddsw-ing into the shared buffer (0x1a4b6).
+         * Index 3 is the newest here, so it goes in first: -c, then 3 x +c
+         * never reaches the rail. Index order would clamp at +32767 and then
+         * subtract. */
+        sV[0] = sV[1] = sV[2] = 32767;
+        sV[3] = -32768;
+        for (int i = 0; i < 4; i++)
+        {
+            vo_render_fixture(&g_voices[i], &wV[i], 50, 0);
+            g_voices[i].age = (uint32_t) i + 1;
+        }
+        {
+            static int16_t buf1[2];
+            render_frames(buf1, 1);
+            int32_t newest_first = vo_sat_add(
+                vo_sat_add(vo_sat_add(vo_sat_add(0, c_neg), c_pos), c_pos),
+                c_pos);
+            is_int(buf1[0], newest_first,
+                   "i-mix-saturation: voices accumulate newest-first "
+                   "(0x1300c head insert, 0x130bc walk), got the pool-index "
+                   "order's result otherwise; expected %d",
+                   newest_first);
+        }
+        voice_pool_reset();
     }
 
     /* ----------------------- S6.4.8: loop wraparound and one-shot end
@@ -3935,6 +3963,32 @@ static void t_findings_live(void)
                 "the corpus mean -- INVESTIGATE.adoc#i-release-floor",
                 "S5.6 a 10 ms authored release stays 10 ms (no floor) "
                 "[A:0x19801],[A:0x19815]");
+        voice_pool_reset();
+    }
+
+    tap_diag("--- S5.6: a releasing voice retires when EG1 passes -80 dB "
+             "[A:0x19733] ---");
+    {
+        synth_construct();
+        Voice *v = &g_voices[0];
+        vo_setup_bare_active(v, 3, 51);
+        v->env_stage = ENV_RELEASE;
+        v->env_level = 1.0;
+        v->env_release_coef = 0.9999;
+        double before = v->env_level;
+        for (int i = 0; i < 200000 * RESAMPLE_FACTOR && v->active; i++)
+        {
+            before = v->env_level;
+            voice_step_envelope(v);
+        }
+        /* -8000 in the driver's hundredths of a dB (+0x13c, bare EG
+         * [A:0x194da]) is amplitude 1e-4; oracle, 12-channel file: its last
+         * voice died at +0x13c -8025, the engine's -66 dB floor retired it
+         * 10 240 frames earlier. */
+        ok(!v->active && before * v->env_release_coef < 1e-4 && before >= 1e-4,
+           "S5.6 release retires on the first step below -80 dB (1e-4), got "
+           "%g -> %g",
+           before, before * v->env_release_coef);
         voice_pool_reset();
     }
 

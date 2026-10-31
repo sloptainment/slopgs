@@ -1056,10 +1056,9 @@ double voice_step_envelope(Voice *v)
             break;
         case ENV_RELEASE:
             v->env_level *= v->env_release_coef;
-            /* The driver's -80 dB finish floor [A:0x19733] was tried here
-             * instead of -66 dB and measured no benefit. +0x13c is the bare
-             * EG, not gain-inclusive [A:0x194da]. */
-            if (v->env_level < 0.0005)
+            /* The driver's finish floor: +0x13c < -8000 hundredths of a dB
+             * [A:0x19733], the bare EG, not gain-inclusive [A:0x194da] */
+            if (v->env_level < 0.0001)
             {
                 v->env_level = 0.0;
                 v->active = 0;

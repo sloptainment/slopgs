@@ -176,9 +176,25 @@ void render_frames(int16_t *out, uint32_t frames)
          * S3.5/S3.6/S3.10): live-read every sub-chunk so a change reaches
          * already-sounding notes */
         voices_update_modulation();
+        /* the driver's active list takes new voices at the head
+         * (0x12ffe-0x1300c) and Mix walks it from there (0x130bc), so
+         * saturation sees the newest voice first: age descending, ties by
+         * index */
+        int order[NUM_VOICES];
+        int n = 0;
         for (int vi = 0; vi < NUM_VOICES; vi++)
         {
-            Voice *v = &g_voices[vi];
+            int j = n++;
+            while (j > 0 && g_voices[order[j - 1]].age < g_voices[vi].age)
+            {
+                order[j] = order[j - 1];
+                j--;
+            }
+            order[j] = vi;
+        }
+        for (int oi = 0; oi < NUM_VOICES; oi++)
+        {
+            Voice *v = &g_voices[order[oi]];
             if (v->active && v->wave)
             {
                 render_voice(v, out + (uint32_t) done * 2, chunk,

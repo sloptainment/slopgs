@@ -246,22 +246,6 @@ the error tracks Q12 rounding.
 Where:: `voice.c` `voice_update_pitch` (`raw / BASE_RATE` truncates,
 `base_ratio_q12`); no test.
 
-[#i-mix-saturation]
-== i-mix-saturation: the render pins to the rail 4× as often as the oracle in overload
-
-Known:: A dense 12-channel mix: 25 516 clipped samples vs 6 598, while
-each channel solo clips alike (496 vs 480 on the loudest). Where the sum of
-the oracle's 12 solo renders exceeds int16, the oracle's full mix sits at the rail 13.5%
-of the time (median |x| 32 285, no sign flips); the render 55.8%. Both
-saturate per voice (`sat_add_i16`; MMX variant `0x1a360`), so the result
-depends on accumulation order. Residual share −32 dB of the −13 dB total.
-Open:: The driver's voice accumulation order; whether it saturates per voice,
-per segment or on a wider accumulator.
-Settle by:: Trace the voice loop that calls `0x19644` from `0x130d3` for its
-order; read `0x1a360`'s accumulate.
-Where:: `render.c` `render_frames` (loops `g_voices` by index),
-`sat_add_i16`; no test.
-
 [#i-cosmetic]
 == i-cosmetic: driver unknowns with no output consequence for gm.dls
 
