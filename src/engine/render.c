@@ -19,6 +19,15 @@
 #define GAIN_SEGMENT_FRAMES SERVICE_BLOCK_FRAMES
 #endif
 
+static int32_t abs_i32(int32_t x) { return x < 0 ? -x : x; }
+
+/* pmulhw keeps the high word of the product, which rounds down (0x1a4b3) */
+static int32_t floor_i32(double x)
+{
+    int32_t t = (int32_t) x;
+    return t - (x < (double) t);
+}
+
 static int16_t sat_add_i16(int32_t a, int32_t b)
 {
     int32_t s = a + b;
@@ -84,6 +93,32 @@ static void render_voice(Voice *v, int16_t *out, uint32_t frames,
                             (double) steps;
             v->amp_sub = 0;
             v->amp_left = seg;
+
+            /* the stairs the phase step takes through this segment */
+            int32_t att_l = v->atten_l_hdb + env_hdb;
+            int32_t att_r = v->atten_r_hdb + env_hdb;
+            int32_t d_att = abs_i32(att_l - v->prev_att_l);
+            if (abs_i32(att_r - v->prev_att_r) > d_att)
+                d_att = abs_i32(att_r - v->prev_att_r);
+            v->stair_k = voice_stair_frames(
+                steps, d_att, abs_i32(v->mod_cents - v->prev_mod_cents));
+            if (v->stair_k > steps)
+                v->stair_k = steps;
+            v->stair_left = v->stair_k;
+            v->stair_sub = 0;
+            v->prev_att_l = att_l;
+            v->prev_att_r = att_r;
+            v->prev_mod_cents = v->mod_cents;
+        }
+
+        /* LFO/EG2 movement of the pitch lands K-1 frames into a stair, K
+         * frames apart (0x1a360), unless a bend ramp owns the step */
+        if (!v->ramp_left && v->stair_sub++ % RESAMPLE_FACTOR == 0 &&
+            --v->stair_left == 0)
+        {
+            v->phase_step = (uint32_t) ((int32_t) v->phase_step + v->step_debt);
+            v->step_debt = 0;
+            v->stair_left = v->stair_k;
         }
 
         /* phase step is a ramp accumulator held between refreshes (0x18fba),
@@ -127,8 +162,8 @@ static void render_voice(Voice *v, int16_t *out, uint32_t frames,
             v->amp_l += v->amp_step_l;
             v->amp_r += v->amp_step_r;
         }
-        int32_t out_l = (int32_t)((double) interp * v->amp_l);
-        int32_t out_r = (int32_t)((double) interp * v->amp_r);
+        int32_t out_l = floor_i32((double) interp * v->amp_l);
+        int32_t out_r = floor_i32((double) interp * v->amp_r);
 
         out[i * 2 + 0] = sat_add_i16(out[i * 2 + 0], out_l);
         out[i * 2 + 1] = sat_add_i16(out[i * 2 + 1], out_r);

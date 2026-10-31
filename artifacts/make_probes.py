@@ -3103,6 +3103,23 @@ def p51_lfo_tremolo():
     return _write_manifest("51_lfo_tremolo.mid", tr, man)
 
 
+def p52_eg2_pitch():
+    """EG2 -> pitch at a low ratio.
+
+    122 Seashore carries EG2->pitch +1012 c with a 5.3 s attack, and key 36 sits
+    at ratio 0.1439 (589 in Q12). The driver ramps the phase step in stairs
+    across each segment (0x1a360), so a rising EG2 plays flatter than its
+    instantaneous value and a falling one sharper. One note, 3 s, then its
+    release.
+    """
+    tr = Track()
+    man = ["# 52_eg2_pitch.mid", "# onset_s\toff_s\tprogram\tkey"]
+    tr.prog(0, 0, 122)
+    tr.note(t(0.5), t(3.0), 0, 36, 100)
+    man.append("0.500\t3.500\t122\t36")
+    return _write_manifest("52_eg2_pitch.mid", tr, man)
+
+
 PROBES = [p01_programs, p02_keyrange, p03_velocity, p04_envelope, p05_pitchbend,
           p06_modwheel, p07_pan_volume, p08_reverb, p09_chorus, p10_polyphony,
           p11_drums, p12_gs_sysex, p13_edge, p14_running_status,
@@ -3116,7 +3133,7 @@ PROBES = [p01_programs, p02_keyrange, p03_velocity, p04_envelope, p05_pitchbend,
           p41_sustain_decay_curve, p42_multitrack_same_tick, p43_level_vs_pitch,
           p44_release_shape, p45_release_from_level, p46_noteoff_grid,
           p47_gm_off_state, p48_rhythm_part_reset, p49_gm_off_during_note,
-          p50_gain_ceiling, p51_lfo_tremolo]
+          p50_gain_ceiling, p51_lfo_tremolo, p52_eg2_pitch]
 
 
 def check(path):

@@ -63,9 +63,10 @@ reports 44100 (`0x188f0`). Every gm.dls patch seen so far carries CC1→pitch
 47 c, so its segment is ≤ 459 frames at 6 Hz (Sine, Square) and 530 at
 5.2 Hz (Piano); probes 45/46 measure ~512 and probe 44 implies 24–28 ms.
 The mixer ramps gain linearly in amplitude to the value at the segment end
-(`0x18fba`). The buffer is the caller's KS buffer (`0x181fa`).
-Open:: Whether pitch ramps or holds across a segment (bears on
-<<i-vibrato-depth>>). Whether the per-voice minimum also fixes the
+(`0x18fba`). The buffer is the caller's KS buffer (`0x181fa`). Pitch is
+not a smooth ramp: the step is held and refreshed in stairs
+(<<i-stair-cap>>).
+Open:: Whether the per-voice minimum also fixes the
 decay-dominated items: a fixed 512 cost `08_reverb` +9.5 and `03_velocity`
 +7.1 dB (sweep at the old −31 dB baseline: 128 −31.18, 256 −31.14,
 512 −30.90; re-run against −32.98).
@@ -120,6 +121,31 @@ Open:: The duration, the bimodality, the asymmetry.
 Settle by:: Re-derive both readings; `32.flac`'s alignment drifts 422 ms
 non-linearly, so do not fit against it.
 Where:: `voice.c` `RAMP_HORIZON_FRAMES`, `ramp_reaim`; no test.
+
+[#i-stair-cap]
+== i-stair-cap: the pitch stair is capped at the engine's 256-frame segment ([F])
+
+Known:: The driver holds the phase step through a segment and refreshes it
+every K frames, the first K−1 frames in (`0x1a360`; `voice_stair_frames`),
+K = (8N / (max(ΔL, ΔR, 2·Δcents) / 2) + 3) & ~3 clamped to 4..512, where N
+is the segment and Δ the change since the previous segment (`0x19077`);
+checked against all 199 segments of 122 key 36. Held while EG2 rises, the
+step lags by K/2 frames: that is the entry's former "+2.28 c sharp", and
+the drift reverses in release because EG2 then falls. Drift over the held
+note went from −90 to −46 frames. The engine caps K at its own segment N=256;
+the driver does not, and when K ≥ N its step is not refreshed that segment.
+A/B on the capped build, 52 items: mean −42.31 → −42.45, `52_eg2_pitch`
+−39.32 → −44.52, `51_lfo_tremolo` −46.59 → −43.56. Uncapped: mean −40.16,
+52 −19.99, 51 −24.16 (`06_modwheel` −40.66 → −32.98): an N of 256 freezes
+the step where the driver's N (459 on an LFO voice, 1024 at the oracle's
+buffer) would not.
+Open:: How much of the remaining −46 frames and of 51's loss is N. Whether
+the XP buffer's N changes the lag the references show.
+Settle by:: Give each voice its own segment N (<<i-segment-length>>), drop
+the cap, re-run the A/B above.
+Where:: `render.c` `stair_k`; `voice.c` `voice_stair_frames`,
+`voice_update_pitch` (`step_debt`); unit.c "Pitch follows LFO/EG2 in
+stairs".
 
 [#i-vibrato-depth]
 == i-vibrato-depth: the reference's vibrato is ~5% shallower than the render
@@ -229,22 +255,6 @@ Settle by:: Find where the driver seeds the voice's sample position and starts
 EG1 at note-on; diff the oracle's per-sample attack on 051 key 48 against the
 raw wave 388 data.
 Where:: `voice.c` `voice_note_on` (`phase_pos = 0`); no test.
-
-[#i-low-ratio-pitch]
-== i-low-ratio-pitch: 122 Seashore plays ~2.3 c sharp and 17–21 frames late
-
-Known:: One note (key 36, held 3 s, no bend): the render's content runs
-ahead of the oracle linearly, 85 frames over 64 512 (+2.28 c), and the drift
-reverses after note-off. First non-zero frame 11287 vs 11266 (+21; +17 with
-a +40 c bend). Region 0–127, wave 350, unity 70, fine +44, ratio 0.1439 =
-589.49 in Q12, where 1 LSB is 2.94 c.
-Open:: Whether the error is the step's rounding (2.28 c is not a whole LSB);
-the cause of the late onset; why the drift reverses in release.
-Settle by:: Trace the driver's phase-step arithmetic (`0x195a2` and callees)
-against `voice_update_pitch`; probe key 36 across fine tunes and check whether
-the error tracks Q12 rounding.
-Where:: `voice.c` `voice_update_pitch` (`raw / BASE_RATE` truncates,
-`base_ratio_q12`); no test.
 
 [#i-cosmetic]
 == i-cosmetic: driver unknowns with no output consequence for gm.dls

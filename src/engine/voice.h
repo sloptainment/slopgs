@@ -78,6 +78,18 @@ typedef struct Voice
     /* leftover 1/256ths from the slope above, carried sample to sample by
      * render_voice */
     int32_t phase_step_ramp_acc;
+    /* LFO/EG2 movement of the target not yet in phase_step: the mixer takes it
+     * up every stair_k frames of a segment (0x1a360), unless a bend ramp is
+     * running */
+    int32_t step_debt;
+    /* this block's summed pitch modulation (bend+LFO+EG2), cents */
+    int32_t mod_cents;
+    /* the previous segment's attenuation sums and pitch cents; they size
+     * the stairs (0x19077) */
+    int32_t prev_att_l, prev_att_r, prev_mod_cents;
+    /* BASE_RATE frames between step refreshes this segment; frames left to the
+     * next one; render frames into the segment, for the RESAMPLE_FACTOR grid */
+    uint32_t stair_k, stair_left, stair_sub;
     /* frames since ramp_reaim: the slope is per BASE_RATE frame, applied on
      * every RESAMPLE_FACTOR-th frame */
     uint32_t ramp_sub;
@@ -222,5 +234,10 @@ void voice_update_gain(Voice *v);
  * the ceiling clamp [A:0x18ff7]; env_hdb from voice_env_hdb */
 double voice_amp(int32_t atten_hdb, int32_t env_hdb);
 int32_t voice_env_hdb(double env_level);
+
+/* Frames between phase-step refreshes in a segment of `seg` BASE_RATE frames,
+ * given the largest attenuation change (hdB) and the pitch change (cents)
+ * since the previous segment [A:0x19077-0x190a2] */
+uint32_t voice_stair_frames(uint32_t seg, int32_t d_att, int32_t d_cents);
 
 #endif /* VOICE_H */

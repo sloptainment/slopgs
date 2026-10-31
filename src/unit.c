@@ -2364,6 +2364,26 @@ static void t_render(void)
         voice_pool_reset();
     }
 
+    tap_diag("--- S6.4.5: the gain multiply floors, pmulhw [A:0x1a4b3] ---");
+    {
+        static int16_t vo_neg[2] = {-1000, -1000};
+        static int16_t buf1[2];
+        vo_r_wave.sample_rate = (uint32_t) RENDER_RATE;
+        vo_r_wave.samples = vo_neg;
+        vo_r_wave.sample_count = 2;
+        voice_pool_reset();
+        vo_render_fixture(&g_voices[0], &vo_r_wave, 50, 0);
+        g_voices[0].phase_pos = 0;
+        g_voices[0].phase_step = 0;
+        render_frames(buf1, 1);
+        is_int(buf1[0], (int) floor(-1000 * VO_GAIN_CEILING),
+               "a negative sample times the gain rounds down, not toward zero "
+               "(oracle 122 key 36: -1 where the render had 0 for 8 frames "
+               "from frame 11266; 36_kit_key_fallback -83.6 -> -240 dB, "
+               "03_velocity dead 1215 -> 150 ms, mean -42.45 -> -45.02)");
+        voice_pool_reset();
+    }
+
     /* --------------------- S6.4.6: saturating mix, no wide accumulator
      * --------------------- */
     tap_diag("--- S6.4.6: saturating accumulate directly into the 16-bit "
@@ -4098,6 +4118,65 @@ static void t_findings_live(void)
         ok(a && a->env_stage == ENV_RELEASE && !a->fast_release_committed,
            "S4.3 in Mono mode a new note releases the previous one through "
            "ordinary note-off (0x19a2c)");
+        voice_pool_reset();
+        synth_construct();
+    }
+
+    tap_diag("--- Pitch follows LFO/EG2 in stairs: the mixer refreshes the "
+             "phase step every K frames of a segment [A:0x1a360] ---");
+    {
+        /* gdb on the oracle, 122 Seashore key 36 held 3 s (EG2->pitch +1012
+           c): 199 segments, K from 0x190a2 equals this formula on all 199.
+           Columns: segment frames, max |d attenuation| (hdB), |d cents|, K */
+        static const struct
+        {
+            uint32_t n;
+            int32_t da, dc;
+            uint32_t k;
+        } rows[] = {
+            {239, 10319, 2, 4}, {1024, 509, 9, 32}, {1024, 317, 9, 52},
+            {58, 0, 1, 464},    {658, 86, 6, 124},  {366, 19, 3, 328},
+            {366, 29, 4, 212},  {658, 19, 6, 512},  {1024, 0, 0, 512},
+        };
+        for (unsigned i = 0; i < sizeof rows / sizeof *rows; i++)
+            is_int(voice_stair_frames(rows[i].n, rows[i].da, rows[i].dc),
+                   rows[i].k,
+                   "K = (8N/(max(dAtt, 2dCents)/2) + 3) & ~3, clamped to "
+                   "4..512 (N=%u dAtt=%d dCents=%d)",
+                   (unsigned) rows[i].n, (int) rows[i].da, (int) rows[i].dc);
+
+        /* EG2 jumps +1200 c on the first block: 4096 -> 8192. The step is
+           held for K-1 = 3 frames (K=4: the attenuation jumps from 0), and the
+           first advance with the new step is frame 3's */
+        static int16_t ramp[64];
+        for (int i = 0; i < 64; i++)
+            ramp[i] = (int16_t) (i * 256);
+        static Wave w;
+        w.sample_rate = (uint32_t) RENDER_RATE;
+        w.samples = ramp;
+        w.sample_count = 64;
+        synth_construct();
+        voice_pool_reset();
+        Voice *v = &g_voices[0];
+        vo_render_fixture(v, &w, 60, 0);
+        v->base_ratio_q12 = 4096;
+        v->phase_step = v->phase_step_target = 1u << 12;
+        v->eg2_stage = ENV_ATTACK;
+        v->eg2_level = 0.0;
+        v->eg2_attack_step = 1.0;
+        v->eg2_sustain_level = 1.0;
+        v->eg2_depth_cents = 1200.0;
+        static int16_t buf[8 * 2];
+        render_frames(buf, 8);
+        static const int idx[8] = {0, 1, 2, 3, 5, 7, 9, 11};
+        int stairs_ok = 1;
+        for (int i = 0; i < 8; i++)
+            if (buf[i * 2] != (int16_t) vo_apply_gain(idx[i] * 256))
+                stairs_ok = 0;
+        ok(stairs_ok,
+           "an EG2 pitch jump reaches phase_step K-1 frames into the segment, "
+           "not at its start (oracle 122 key 36: +2.28 c sharp, lag K/2 on "
+           "average)");
         voice_pool_reset();
         synth_construct();
     }

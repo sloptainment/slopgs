@@ -307,6 +307,8 @@ static int32_t voice_lfo_cents(Voice *v)
 static void ramp_reaim(Voice *v, uint32_t frames)
 {
     int64_t d = (int64_t) v->phase_step_target - (int64_t) v->phase_step;
+    /* the aim below already covers whatever was pending */
+    v->step_debt = 0;
     /* Q8 per BASE_RATE frame */
     int32_t slope = (int32_t) ((d << 8) / (int64_t) (frames / RESAMPLE_FACTOR));
     if (slope == 0)
@@ -339,6 +341,7 @@ void voice_ramp_tick(uint32_t frames)
         }
         v->ramp_left = 0;
         v->phase_step = v->phase_step_target;
+        v->step_debt = 0;
         v->phase_step_ramp_step = 0;
         v->phase_step_ramp_acc = 0;
     }
@@ -367,10 +370,18 @@ void voice_update_pitch(Voice *v)
     int bend_moved = (bend_cents != v->bend_cents_applied);
     if (!bend_moved)
     {
-        int64_t moved = (int64_t) v->phase_step +
-                        ((int64_t) new_target - (int64_t) v->phase_step_target);
-        v->phase_step = (uint32_t)(moved < 0 ? 0 : moved);
+        if (v->ramp_left)
+        {
+            int64_t moved =
+                (int64_t) v->phase_step +
+                ((int64_t) new_target - (int64_t) v->phase_step_target);
+            v->phase_step = (uint32_t) (moved < 0 ? 0 : moved);
+        }
+        else
+            v->step_debt +=
+                (int32_t) new_target - (int32_t) v->phase_step_target;
     }
+    v->mod_cents = mod_cents;
     v->bend_cents_applied = bend_cents;
     v->phase_step_target = new_target;
 
@@ -447,6 +458,21 @@ int32_t voice_env_hdb(double env_level)
 double voice_amp(int32_t atten_hdb, int32_t env_hdb)
 {
     return atten_to_gain(atten_hdb + env_hdb);
+}
+
+uint32_t voice_stair_frames(uint32_t seg, int32_t d_att, int32_t d_cents)
+{
+    int32_t m = 2 * d_cents > d_att ? 2 * d_cents : d_att;
+    uint32_t k = 512;
+    if (m >> 1)
+    {
+        k = seg * 8 / (uint32_t) (m >> 1);
+        if (k > 512)
+            k = 512;
+        if (k < 1)
+            k = 1;
+    }
+    return (k + 3) & ~3u;
 }
 
 void voices_update_modulation(void)
@@ -748,6 +774,10 @@ void voice_note_on(int channel, int note, int velocity)
     v->phase_step_ramp_step = 0;
     v->phase_step_ramp_acc = 0;
     v->ramp_left = 0;
+    /* the driver zeroes its previous-segment values at note-on (0x18f23) */
+    v->step_debt = 0;
+    v->prev_att_l = v->prev_att_r = v->prev_mod_cents = 0;
+    v->stair_left = 0;
     v->bend_cents_applied = synth_pitch_bend_cents(channel);
     v->phase_pos = 0;
 
