@@ -101,15 +101,23 @@ Where:: `voice.c` `TOPUP_INTERVAL_FRAMES`, `voice_step_envelope`; unit.c TODOs
 `S5.4 top-up cadence value`, `S3.4.1/S3.4.2 envelope update cadence`.
 
 [#i-attack-quantize]
-== i-attack-quantize: attack is not quantized through Table C
+== i-attack-quantize: attack is not quantized through Table C ([F] by default)
 
 Known:: The driver's attack level is `TableC[(elapsed*1000/attack)/5]`
-(`0x18ad3`–`0x18b24`), linear in amplitude in 1/200 steps.
-`ENV_ATTACK_TABLE_C=1` implements it: mean −32.47 vs −32.48 dB, no item
-moved > 0.3 dB.
-Open:: Nothing about the driver; whether to ship it.
-Settle by:: A probe with long attacks at low rates, where the steps are
-audible.
+(`0x18ad3`–`0x18b24`), linear in amplitude in 1/200 steps (Table C is
+`1000 + 10000·log10(x²)/96`, `x = i/200`). `ENV_ATTACK_TABLE_C=1` implements
+it (its segment length is the attack time left, not `(1−level)/step`; with
+that, 119 Reverse Cymbal no longer cuts early). A/B against the oracle, note
+60 held 3 s, waveform residual `off → on`: 101 Goblin −39.0 → −43.5 dB,
+89 Pad 2 −42.3 → −47.3, 49 −38.4 → −41.0, 50 −44.1 → −46.0, 95 −37.0 → −38.1,
+119 −33.4 → −37.2; 126 Applause −31.2 → −30.0 (the oracle sits 7% above
+linear there, `on` 1% below). Corpus mean −39.58 (off) vs −39.56 (on); no
+item moved more than 0.62 dB (09_chorus), and shifting `elapsed` by 1 or 2
+samples leaves the mean at −39.56. Not shipped, by the mean-regression rule.
+Open:: Why short attacks score slightly worse with the driver's own formula
+(the segment edges, <<i-segment-length>>, are the suspect); why 126 sits above
+linear.
+Settle by:: Retire <<i-segment-length>>, then flip the flag and re-score.
 Where:: `voice.c` `ENV_ATTACK_TABLE_C`; unit.c TODO `S3.4.2 attack level`.
 
 [#i-bend-ramp]
@@ -197,29 +205,6 @@ reference has near-silent spans of 25–90 ms, the render none.
 Open:: Whether the segment model (<<i-segment-length>>) explains it.
 Settle by:: Re-measure against the current segment model.
 Where:: no test.
-
-[#i-sysex-abi]
-== i-sysex-abi: the public ABI cannot inject SysEx
-
-Known:: `msgs_midi` carries 3 bytes; SysEx reaches `synth_sysex` only from
-SMF playback.
-Open:: Whether the fixed ABI should grow a SysEx entry point.
-Settle by:: A decision.
-Where:: `msgs.h`, `synth.h`.
-
-[#i-reset-pending-program]
-== i-reset-pending-program: a Program Change still queued at System Reset is lost in the driver
-
-Known:: System Reset keeps each channel's last *consumed* locale
-(`unit.c` `S4.6.4 Program survives System Reset`). The driver's controller
-reset deletes every queued node (`0x1252a`), so a Program Change or bank
-event posted but not yet consumed by the mixer is dropped too; the engine
-applies events immediately and keeps it.
-Open:: How often an event is still queued when `FF` arrives (it depends on
-the service-call length, see <<i-envelope-cadence>>). Only direct `msgs_midi`
-`FF` reaches this; SMF `FF` is a meta event.
-Settle by:: A capture of Program Change immediately followed by `FF`.
-Where:: `synth.c` `synth_midi` status `0xFF`; no test.
 
 [#i-kmixer]
 == i-kmixer: 44.1 kHz references pass through kmixer's resampler

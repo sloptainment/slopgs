@@ -68,8 +68,22 @@ static void channel_construct_only(Channel *c)
     c->sustain = 0;
 }
 
+/* Program Change locale nodes a service call has not folded yet (0x16b46),
+ * with the program and locale from before the first of them. */
+static uint8_t pc_pending[16];
+static uint8_t pc_program[16];
+static uint32_t pc_locale[16];
+
+void synth_service_tick(void)
+{
+    for (int i = 0; i < 16; i++)
+        pc_pending[i] = 0;
+}
+
 void synth_reset(void)
 {
+    // every reset path deletes the queued nodes (0x1252a)
+    synth_service_tick();
     g_gs_mode = 0;
     g_master_vol_hdb = 0;
     for (int i = 0; i < 16; i++)
@@ -279,13 +293,15 @@ void synth_midi(uint32_t status, uint32_t d1, uint32_t d2)
     {
         /* 0x13202 resets programs, then 0x1320f's controller reset cancels
          * every queued event, the program-0 locale included: each channel
-         * keeps its scheduled locale and program. */
+         * keeps its last folded scheduled locale and program, so a Program
+         * Change no service call has seen yet is lost. */
         uint8_t program[16];
         uint32_t locale[16];
         for (int i = 0; i < 16; i++)
         {
-            program[i] = g_channels[i].program;
-            locale[i] = g_channels[i].scheduled_locale;
+            program[i] = pc_pending[i] ? pc_program[i] : g_channels[i].program;
+            locale[i] =
+                pc_pending[i] ? pc_locale[i] : g_channels[i].scheduled_locale;
         }
         synth_reset();
         for (int i = 0; i < 16; i++)
@@ -313,6 +329,12 @@ void synth_midi(uint32_t status, uint32_t d1, uint32_t d2)
             dispatch_cc(ch, d1, d2);
             break;
         case 0xC0:
+            if (!pc_pending[ch])
+            {
+                pc_pending[ch] = 1;
+                pc_program[ch] = g_channels[ch].program;
+                pc_locale[ch] = g_channels[ch].scheduled_locale;
+            }
             g_channels[ch].program = (uint8_t) d1;
             /* schedules the new locale from the already-selected bank */
             relatch_locale(&g_channels[ch]);

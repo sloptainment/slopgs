@@ -780,6 +780,12 @@ static void t_synth(void)
         synth_midi(0xB0 | ch, 32, 3); /* CC32 bank_lsb = 3 */
         /* Program Change: program = 7, relatches locale */
         synth_midi(0xC0 | ch, 7, 0);
+        /* a service call folds the locale node into the queue default
+         * [A:0x16b46], so it counts as consumed */
+        {
+            int16_t sink[2];
+            render_frames(sink, 1);
+        }
         /* pitch bend raw = 15<<7 = 1920, away from 8192 */
         synth_midi(0xE0 | ch, 0, 15);
         sy_select_rpn(ch, 0);
@@ -858,6 +864,26 @@ static void t_synth(void)
         is_int(g_master_vol_hdb, 0,
                "S4.6.4 Master Volume attenuation -> 0 after System Reset");
         is_int(g_gs_mode, 0, "S4.6.4 GS-mode flag -> 0 after System Reset");
+
+        /* A Program Change still queued when FF arrives is lost: the service
+         * call (0x13054) folds nodes older than its end into the queue
+         * default (0x16b46), 0x1252a's 0x16af2 deletes the rest. */
+        int16_t sink[2];
+        synth_midi(0xC0 | ch, 20, 0);
+        synth_midi(0xC0 | ch, 21, 0);
+        synth_midi(0xFF, 0, 0);
+        is_int(g_channels[ch].program, 7,
+               "S4.6.4 Program Changes not yet folded by a service call are "
+               "dropped by System Reset "
+               "[A:0x16df4],[A:0x16bae],[A:0x16b46],[A:0x16af2]");
+        is_int((int) g_channels[ch].scheduled_locale, (5 << 14) | (3 << 7) | 7,
+               "S4.6.4 ... and so is their scheduled locale");
+        synth_midi(0xC0 | ch, 22, 0);
+        render_frames(sink, 1);
+        synth_midi(0xFF, 0, 0);
+        is_int(g_channels[ch].program, 22,
+               "S4.6.4 a Program Change folded by a service call survives "
+               "System Reset");
     }
 
     /* S4.6.4 reset-state summary table: GS Reset SysEx net effect. */
@@ -3945,9 +3971,9 @@ static void t_findings_live(void)
             pow(10.0,
                 ((double) g_table_envshape[idx] / 1000.0 - 1.0) * 96.0 / 20.0);
         todo_ok(fabs(v->env_level - want) < 1e-9,
-                "ENV_ATTACK_TABLE_C=1 measured -32.47 vs -32.48 dB corpus "
-                "mean, no item moved >0.3 dB -- not shipped, "
-                "INVESTIGATE.adoc#i-attack-quantize",
+                "ENV_ATTACK_TABLE_C=1 measured -39.56 vs -39.58 dB corpus "
+                "mean (09_chorus +0.62 dB worse), tonal long attacks 2-5 dB "
+                "better -- not shipped, INVESTIGATE.adoc#i-attack-quantize",
                 "S3.4.2 attack level = TableC[(elapsed*1000/attack)/5] on the "
                 "96 dB scale");
         voice_pool_reset();

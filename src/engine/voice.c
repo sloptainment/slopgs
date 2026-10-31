@@ -952,7 +952,11 @@ static uint32_t env_base_frames_to_change(const Voice *v)
         {
             if (v->env_attack_step <= 0.0)
                 return 1;
+#if ENV_ATTACK_TABLE_C
+            double n = (double) (v->env_attack_samples - v->env_attack_elapsed);
+#else
             double n = (1.0 - v->env_level) / v->env_attack_step;
+#endif
             if (n < 1.0)
                 return 1;
             if (n >= (double) ENV_NO_CHANGE)

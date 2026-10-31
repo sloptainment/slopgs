@@ -46,8 +46,16 @@ int32_t synth_pitch_bend_cents(int ch);
  * the caller's job. 0xFF is System Reset. */
 void synth_midi(uint32_t status, uint32_t d1, uint32_t d2);
 
+/* A service call ran: Program Changes posted so far are folded into the
+ * locale queue default (0x16b46) and a later System Reset keeps them. Called
+ * by render_frames. */
+void synth_service_tick(void);
+
 /* Internal-only SysEx handler, not public ABI: msgs_midi's 3-byte signature
- * can't carry a SysEx message. Invoked only from smf.c.
+ * can't carry a SysEx message, and the ABI stays fixed. The driver has no
+ * separate SysEx entry: its buffer walker (0x18057) takes raw variable-length
+ * MIDI events and sends 0xF0 to 0x1367a, anything else to 0x131c0. In-tree
+ * hosts that link the engine (src/vsti) may call this directly.
  * buf points right after the leading 0xF0. */
 void synth_sysex(const uint8_t *buf, uint32_t len);
 

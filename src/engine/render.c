@@ -2,6 +2,7 @@
  * saturating accumulate into int16, loop-end by one subtraction (live MMX
  * variant 0x1a360). */
 #include "render.h"
+#include "synth.h"
 #include "voice.h"
 
 #ifndef GAIN_SEGMENT_FRAMES
@@ -188,4 +189,5 @@ void render_frames(int16_t *out, uint32_t frames)
         voices_advance_lfo(chunk);
         done += chunk;
     }
+    synth_service_tick();
 }
