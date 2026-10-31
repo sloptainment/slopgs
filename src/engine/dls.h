@@ -117,6 +117,7 @@ typedef struct Region
     uint8_t self_nonexclusive;
     uint16_t wave_pool_index;
     uint8_t has_own_wsmp; /* region carried its own wsmp chunk (S2.3.4) */
+    uint8_t own_artic; /* region carried its own lart, not the instrument's */
 } Region;
 
 typedef struct Instrument

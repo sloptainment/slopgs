@@ -277,7 +277,22 @@ void synth_midi(uint32_t status, uint32_t d1, uint32_t d2)
 {
     if (status == 0xFF)
     {
+        /* 0x13202 resets programs, then 0x1320f's controller reset cancels
+         * every queued event, the program-0 locale included: each channel
+         * keeps its scheduled locale and program. */
+        uint8_t program[16];
+        uint32_t locale[16];
+        for (int i = 0; i < 16; i++)
+        {
+            program[i] = g_channels[i].program;
+            locale[i] = g_channels[i].scheduled_locale;
+        }
         synth_reset();
+        for (int i = 0; i < 16; i++)
+        {
+            g_channels[i].program = program[i];
+            g_channels[i].scheduled_locale = locale[i];
+        }
         return;
     }
     uint32_t kind = status & 0xF0;

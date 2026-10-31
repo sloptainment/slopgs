@@ -366,6 +366,7 @@ static void region_defaults(Region *r)
     r->self_nonexclusive = 0;
     r->wave_pool_index = 0;
     r->has_own_wsmp = 0;
+    r->own_artic = 0;
 }
 
 /* Parses one 'rgn '/'rgn2' body. Returns the built Region. */
@@ -451,6 +452,7 @@ static Region *parse_region(const uint8_t *content, uint32_t clen)
                     lp = ldata + lsize;
                 }
                 r->artic = a;
+                r->own_artic = 1;
             }
         }
         p = cdata + size;

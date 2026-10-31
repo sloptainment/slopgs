@@ -72,10 +72,11 @@ void tables_build(void)
         g_table_envshape[i] = (int16_t) trunc_i32(v);
     }
 
-    /* Table D: sine LFO, i = 0..255, amplitude +-100 */
+    /* Table D: sine LFO, i = 0..255, amplitude +-100; 2*pi is float32
+     * (0x11d18), 0x16928 */
     for (i = 0; i < 256; i++)
     {
-        double phase = (double) i * 6.28318530717958647692 * (1.0 / 256.0);
+        double phase = (double) i * 6.2831854820251465 * (1.0 / 256.0);
         double v = rt_sin(phase) * 100.0;
         g_table_sine[i] = (int16_t) trunc_i32(v);
     }

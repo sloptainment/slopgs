@@ -207,27 +207,19 @@ Open:: Whether the fixed ABI should grow a SysEx entry point.
 Settle by:: A decision.
 Where:: `msgs.h`, `synth.h`.
 
-[#i-reset-order]
-== i-reset-order: which pending events survive the two reset orderings
+[#i-reset-pending-program]
+== i-reset-pending-program: a Program Change still queued at System Reset is lost in the driver
 
-Known:: GM On/Off and GS Reset run ResetAllChannelControllers then
-ResetAllProgramsAndRhythmGroups (`0x137fa`); System Reset runs them the other
-way round (`0x13202`, `0x1320f`). The first cancels pending queue nodes; the
-second schedules program events.
-Open:: Which events survive each, and whether it is audible.
-Settle by:: Trace `0x1252a` against `0x12780`'s scheduling.
-Where:: `synth.c` `synth_reset`; no test.
-
-[#i-storage-policy]
-== i-storage-policy: 16-bit samples may be stored as 8-bit on a stock install (audible if so)
-
-Known:: A caller-supplied `flagByte` selects raw 16-bit, MSB-truncated 8-bit,
-or log-companded 8-bit (Table E) storage; wave `wsmp.fulOptions` can veto
-(`0x15564`–`0x15625`).
-Open:: Which path fires on a stock XP install.
-Settle by:: Compare the references' quantization floor with Table E's
-signature, or trace the `AddDevice` caller.
-Where:: `dls.c` (16-bit raw only); no test.
+Known:: System Reset keeps each channel's last *consumed* locale
+(`unit.c` `S4.6.4 Program survives System Reset`). The driver's controller
+reset deletes every queued node (`0x1252a`), so a Program Change or bank
+event posted but not yet consumed by the mixer is dropped too; the engine
+applies events immediately and keeps it.
+Open:: How often an event is still queued when `FF` arrives (it depends on
+the service-call length, see <<i-envelope-cadence>>). Only direct `msgs_midi`
+`FF` reaches this; SMF `FF` is a meta event.
+Settle by:: A capture of Program Change immediately followed by `FF`.
+Where:: `synth.c` `synth_midi` status `0xFF`; no test.
 
 [#i-kmixer]
 == i-kmixer: 44.1 kHz references pass through kmixer's resampler
@@ -266,49 +258,6 @@ Open:: Whether `rate_parity.py` should compare by 2:1 decimation, which
 keeps ×1's aliasing and passes all 70 exactly, or keep soxr and exempt these.
 Settle by:: A policy decision; no measurement is outstanding.
 Where:: `artifacts/rate_parity.py` `render()`.
-
-[#i-gm-off-voices]
-== i-gm-off-voices: does a sounding voice survive GM System Off
-
-Known:: GM System Off releases the collection (`0x13700`); the release is
-refcounted (`0x16066`).
-Open:: Whether a sounding voice holds a reference.
-Settle by:: Capture a held note across GM System Off.
-Where:: `synth.c` GM System Off; no test.
-
-[#i-region-lart-count]
-== i-region-lart-count: region-lart count is unreachable through the API
-
-Known:: gm.dls: 535 of 1498 regions carry their own `lart`. Pointer identity
-misclassifies 51 regions (a shared block used by one region looks private).
-Open:: Nothing about the driver; needs an `artic_is_private` flag.
-Where:: unit.c SKIP `535 of 1498 regions carry their own lart`.
-
-[#i-table-d-2pi]
-== i-table-d-2pi: Table D uses a double 2π where the driver stores float32
-
-Known:: `.rdata 0x11d18` = 6.2831854820251465. The ideal constant gives
-`t[64]` = 100; the driver 99. `tables.c` gets 99 only because `rt_sin`
-undershoots by ~6e-12. Improving `rt_sin` breaks the table.
-Settle by:: Store the float32 constant.
-Where:: `tables.c`; unit.c `S T.5`.
-
-[#i-timecent-count]
-== i-timecent-count: "552 distinct EG timecent values" does not reproduce
-
-Known:: An independent RIFF walk counts 596 under the stated reading
-(dests 0x206/0x207/0x209/0x30a/0x30b/0x30d, both lart scopes); no variant
-gives 552. The `pow` margin below is quantified over this set.
-Settle by:: Re-derive the count and the margin over the real set.
-Where:: unit.c `S3.4.1`.
-
-[#i-rtpow-margin]
-== i-rtpow-margin: rt_pow uses 91.8% of the truncation margin
-
-Known:: Margin 1,367,824 ULP ≈ 2.960e-10 relative; `rt_pow`'s worst error is
-2.717e-10. `rt_pow` cannot get less accurate; if <<i-timecent-count>> changes
-the set, recompute.
-Where:: unit.c `S3.4.1 rt_pow(2.0, tc/1200.0)'s own worst relative error`.
 
 [#i-cosmetic]
 == i-cosmetic: driver unknowns with no output consequence for gm.dls

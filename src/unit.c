@@ -329,9 +329,9 @@ static void t_tables(void)
            "S T.4 driver-table check: t[200] -> 999 (a missing log10 gives "
            "1104)");
 
-    /* Table D matches the driver's despite tables.c's full-double 2*pi (the
-     * driver's is float32, 0x11d18): rt_sin's undershoot plus the int16
-     * truncation absorb it at all 256 phases. */
+    /* Table D: the driver (0x16928) computes i * f32(2*pi, 0x11d18) *
+     * f32(1/256, 0x11d14) in x87, fsin, * f32(100); the float32 2*pi puts
+     * t[64] just under 100 whatever the sine's own error. */
     {
         int mism = 0, first = -1;
         for (i = 0; i < 256; i++)
@@ -345,9 +345,7 @@ static void t_tables(void)
         }
         if (mism)
             tap_diag("first mismatch at [%d]: got %d, driver %d (%d/%d entries "
-                     "differ) -- tables.c's Table D loop uses the full-double "
-                     "2*pi literal, not the binary's float32-rounded 2*pi "
-                     "(0x11d18 = 6.2831854820251465)",
+                     "differ)",
                      first, (int) g_table_sine[first],
                      (int) tb_golden_sine[first], mism, 256);
         is_int(mism, 0,
@@ -357,11 +355,11 @@ static void t_tables(void)
     }
 
     is_int(g_table_sine[64], 99,
-           "S T.5 driver-table check: t[64] -> 99, reached via rt_sin's Taylor "
-           "undershoot rather than the driver's float32 2*pi");
+           "S T.5 driver-table check: t[64] -> 99, reached via the driver's "
+           "float32 2*pi (0x11d18), not via sine error");
     is_int(g_table_sine[192], -99,
-           "S T.5 driver-table check: t[192] -> -99, reached via rt_sin's "
-           "Taylor undershoot rather than the driver's float32 2*pi");
+           "S T.5 driver-table check: t[192] -> -99, reached via the driver's "
+           "float32 2*pi (0x11d18), not via sine error");
 
     /* S T.6 -- Table E, whole-table compare */
     {
@@ -575,9 +573,7 @@ static void t_rt(void)
     }
 
     /* rt_sin vs libm at the 256 Table-D phases, same full-double 2*pi both
-     * sides --
-     * isolates polynomial accuracy from the float32-2pi issue tracked in
-     * t_tables (S T.5). */
+     * sides -- isolates polynomial accuracy from the phase constant. */
     {
         const double pi2 = 6.28318530717958647692;
         double maxabs = 0.0, worst_ph = 0.0;
@@ -652,8 +648,23 @@ static void t_rt(void)
                  got);
         is_int((int32_t) got, 269009,
                "S3.4.1 gm.dls's closest-to-a-boundary timecent of its 552 EG "
-               "values (tc=4330.571090698242) truncates to 269009 samples, "
-               "1,367,824 ULP from the boundary [D:gm.dls]");
+               "values (551 plus the INT32_MIN sentinel: art1 blocks with "
+               "source and control 0 at dests 0x206/0x207/0x209/0x30a/0x30b/"
+               "0x30d, both lart scopes) (tc=4330.571090698242) truncates to "
+               "269009 samples, 1,367,824 ULP from the boundary [D:gm.dls]");
+    }
+
+    /* The 4 set values whose exact result is an integer have no margin at
+     * all: tc = -1200, 0, 1200, 2400. */
+    {
+        int k;
+        for (k = -1; k <= 2; k++)
+            is_int(
+                (int32_t) (rt_pow(2.0, (double) k) * 22050.0),
+                (int32_t) (11025 << (k + 1)),
+                "S3.4.1 the 4 gm.dls timecents whose exact result is a whole "
+                "sample count (tc=-1200,0,1200,2400) have zero margin; "
+                "rt_pow must land on it exactly [D:gm.dls]");
     }
 
     /* S3.4.1's 1,367,824-ULP margin, converted to relative error at 269010
@@ -687,7 +698,9 @@ static void t_rt(void)
            "tc=-12000..8000 stays below gm.dls's 1,367,824-ULP margin "
            "(converted to relative terms at the 269010-sample worst-case "
            "magnitude) -- with far less headroom than the 'over a million ULP' "
-           "prose suggests");
+           "prose suggests; over gm.dls's 551 non-sentinel values rt_pow "
+           "truncates identically to a 60-digit exp/ln (0 flips, worst "
+           "relative error 2.717e-10 against the 2.960e-10 margin)");
     }
 }
 
@@ -796,8 +809,20 @@ static void t_synth(void)
                "S4.6.4 Bank MSB -> 0 after System Reset");
         is_int(g_channels[ch].bank_lsb, 0,
                "S4.6.4 Bank LSB -> 0 after System Reset");
-        is_int(g_channels[ch].program, 0,
-               "S4.6.4 Program (scheduled locale) -> 0 after System Reset");
+        /* 0x13202 posts program 0 to the locale queue (0xc50+0x28*ch, read
+         * at note-on, 0x12dc3) and 0x1320f's ResetAllChannelControllers then
+         * runs 0x1252a(0,0), whose 0x16af2 deletes every node of every queue
+         * (0x16afe-0x16b1a: node.time >= 0), the locale node included.
+         * GM On/Off and GS Reset run the two the other way round, so there
+         * program 0 survives. */
+        is_int(g_channels[ch].program, 7,
+               "S4.6.4 Program survives System Reset: the program-0 locale "
+               "event is cancelled by the controller reset that follows it "
+               "[A:0x13202],[A:0x1320f],[A:0x1252a]");
+        is_int((int) g_channels[ch].scheduled_locale, (5 << 14) | (3 << 7) | 7,
+               "S4.6.4 the scheduled locale (bank 5/3, program 7) survives "
+               "System Reset; only the direct bank bytes are zeroed "
+               "[A:0x16dc4],[A:0x16ddc]");
         is_int(g_channels[ch].pitch_bend, 8192,
                "S4.6.4 Pitch Bend -> 8192 after System Reset");
         is_int(g_channels[ch].pb_range_cents, 500,
@@ -846,8 +871,13 @@ static void t_synth(void)
         synth_midi(0xB0 | ch, 6, 9);    /* pb_range_cents = 900 */
         sy_select_rpn(ch, 1);           /* leave rpn_select == 1, non-Null */
         synth_midi(0xB0 | ch, 64, 100); /* sustain raw = 100 */
+        synth_midi(0xC0 | ch, 7, 0);
 
         sy_gs_reset();
+
+        is_int(g_channels[ch].program, 0,
+               "S4.6.4 Program -> 0 after GS Reset: ResetAllPrograms runs "
+               "after the controller reset's cancel [A:0x137fa]-[A:0x13813]");
 
         is_int(g_gs_mode, 1,
                "S4.5/S4.6.4 GS-mode flag -> 1 after GS Reset (set after "
@@ -3155,13 +3185,17 @@ static void t_dls(void)
                    "across all regions");
         }
 
-        tap_skip("Region.artic pointer identity misclassifies 51 of 1498 "
-                 "regions when an instrument's shared "
-                 "default and a region's own lart happen to alias to a "
-                 "single-occurrence pointer within that "
-                 "instrument (independently verified: see report) -- not a "
-                 "reliable proxy for the exact count",
-                 "S2.11: 535 of 1498 regions carry their own lart");
+        {
+            int own = 0;
+            for (Instrument *inst = g_dls.first_instrument; inst;
+                 inst = inst->next)
+                for (Region *r = inst->first_region; r; r = r->next)
+                    own += r->own_artic;
+            is_int(own, 535,
+                   "S2.11: 535 of 1498 regions carry their own lart "
+                   "(independent RIFF walk of gm.dls: rgn/rgn2 LISTs with a "
+                   "lart/lar2 child) [D:gm.dls]");
+        }
     }
 
     tap_diag("--- Block B: S2.4/S2.5 articulation (real gm.dls data) ---");
@@ -3926,6 +3960,14 @@ static void t_findings_live(void)
     else
     {
         synth_construct();
+        voice_note_on(0, 60, 100);
+        sy_gm(0);
+        ok(!voice_any_active(),
+           "S4.5 GM System Off ends a sounding voice: no voice holds the "
+           "collection (its refcount at +0x2c is only incremented by the "
+           "loader, 0x1655b/0x16621), and ResetAllChannelControllers "
+           "frees every active voice (0x126cf -> 0x123de -> 0x18ec8) in the "
+           "same call, before any mix");
         sy_gm(0);
         voice_note_on(0, 60, 100);
         ok(!voice_any_active(), "S4.5 after GM System Off a note-on is silent");
@@ -4169,6 +4211,18 @@ static void t_findings_dls(void)
                r->wave->samples[0] == 16384 && r->wave->samples[1] == -16384 &&
                r->wave->samples[3] == -32768,
            "S2.7.2/S6.2.2 8-bit PCM: byte+0x80 then *256 [A:0x1554e]");
+    }
+    {
+        int rc = dlx_load_one(0, dlx_no_conn, 0, 0);
+        Region *r = dlx_region0();
+        ok(rc == 0 && r && r->wave && r->wave->samples &&
+               r->wave->samples[0] == dlx_pcm[0] &&
+               r->wave->samples[7] == dlx_pcm[7],
+           "S2.7.2 16-bit PCM is stored raw: the storage flag byte reaching "
+           "0x153fc is the collection manager's +0x1c, zeroed by its "
+           "constructor (0x14ded) and written nowhere else, so the 8-bit "
+           "truncating and companded paths (0x15564-0x15625) never run "
+           "[A:0x15625]");
     }
 
     tap_diag("--- S2.3.6/S2.4: art1 decoding ---");
