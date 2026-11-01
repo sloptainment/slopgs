@@ -37,9 +37,6 @@ void voice_pool_reset(void)
         v->phase_pos = 0;
         v->phase_step = 0;
         v->phase_step_target = 0;
-        v->phase_step_ramp_step = 0;
-        v->phase_step_ramp_acc = 0;
-        v->ramp_left = 0;
         v->base_cents = 0;
         v->base_ratio_q12 = 4096; /* unity */
         v->loop_start_s = v->loop_len_s = v->sample_end_s = 0;
@@ -50,6 +47,8 @@ void voice_pool_reset(void)
         v->amp_step_l = v->amp_step_r = 0.0;
         v->amp_retire = 0;
         v->start_delay = 0;
+        v->release_at = VOICE_NO_RELEASE;
+        v->starting = 0;
         v->atten_const_hdb = 0;
         v->env_stage = ENV_IDLE;
         v->env_level = 0.0;
@@ -57,7 +56,7 @@ void voice_pool_reset(void)
         v->eg2_off = -1;
         v->eg2_t = 0;
         v->eg2_cents = 0;
-        v->eg2_left = v->eg2_inc = v->eg2_acc = 0;
+        v->step_left = v->step_inc = v->step_acc = 0;
         v->eg2_depth_cents = 0.0;
         v->held = 0;
         v->sustain_deferred = 0;
@@ -98,12 +97,16 @@ static int32_t cents_to_ratio_q12(int32_t cents)
 /* 0x15364: tc = lScale/65536.0; duration = 2^(tc/1200), trunc toward
  * zero (kept as a plain double here, feeding a continuous-time coefficient, not
  * an integer table). */
+uint64_t g_now;
+
 /* Where inside the current render call the event being dispatched actually
  * falls; smf.c sets it per event, direct msgs_midi injection leaves it at 0
- * ("now"). Only note-on reads it -- see Voice::start_delay. */
+ * ("now"). Note-on, note-off and the controller queues read it. */
 static uint32_t g_event_offset = 0;
 
 void voice_set_event_offset(uint32_t frames) { g_event_offset = frames; }
+
+uint64_t voice_event_time(void) { return g_now + g_event_offset; }
 
 static double timecents_to_seconds(int32_t tc)
 {
@@ -133,15 +136,6 @@ static int32_t scale_tc_by_source(int32_t tc, int16_t depth, int src)
 #ifndef RELEASE_RATE_MULT
 #define RELEASE_RATE_MULT 1.0
 #endif
-/* [F] RELEASE_FLOOR_S: the driver has no floor (0x197dc scales the authored
- * duration by level/1000 and nothing else). Removing it moves the corpus mean
- * -32.48 -> -32.28 dB (37_rac_volume_order -14 dB better; 25_pan_law,
- * 27_gain_curves +5 dB worse), so it stands in for an unrecovered release
- * shape -- INVESTIGATE.adoc#i-release-floor. */
-#ifndef RELEASE_FLOOR_S
-#define RELEASE_FLOOR_S 0.060
-#endif
-
 /* FAST_RELEASE_S = 1/70: `0x19834` divides the device rate (22050, set once
  * at 0x12b40) by 70 and timestamps are sample positions, so the bound is 315
  * samples = 14.29 ms */
@@ -263,147 +257,87 @@ void voice_eg2_segment(Voice *v, uint32_t frames)
  * sine/100, integer; cents for pitch, hdB for attenuation. 0 until the delay
  * has elapsed, then Table D index ((elapsed - delay) * step >> 12) & 255
  * [A:0x1891e]. step and delay are in BASE_RATE frames, elapsed in
- * RENDER_RATE frames. */
-static int32_t voice_lfo(Voice *v, int32_t cc1_depth, int32_t inherent)
+ * RENDER_RATE frames; CC1 as due at time t. */
+static int32_t voice_lfo(Voice *v, int32_t cc1_depth, int32_t inherent,
+                         uint64_t t)
 {
     uint64_t delay = (uint64_t) v->artic->lfo_delay_frames * RESAMPLE_FACTOR;
     if (v->lfo_elapsed < delay)
         return 0;
     int32_t depth =
-        g_channels[v->channel].modulation * cc1_depth / 127 + inherent;
-    uint64_t t = v->lfo_elapsed - delay;
-    int idx = (int) ((t * v->artic->lfo_step / RESAMPLE_FACTOR) >> 12) & 255;
+        (int32_t) synth_ctl_at(v->channel, CTL_MOD, t) * cc1_depth / 127 +
+        inherent;
+    uint64_t e = v->lfo_elapsed - delay;
+    int idx = (int) ((e * v->artic->lfo_step / RESAMPLE_FACTOR) >> 12) & 255;
     return depth * g_table_sine[idx] / 100;
 }
 
-static int32_t voice_lfo_cents(Voice *v)
+static int32_t voice_lfo_cents(Voice *v, uint64_t t)
 {
     if (!v->artic)
         return 0;
     return voice_lfo(v, v->artic->lfo_pitch_cc1_cents,
-                     v->artic->lfo_pitch_inherent_cents);
+                     v->artic->lfo_pitch_inherent_cents, t);
 }
 
-/* [F] RAMP_HORIZON_FRAMES=320 (14.5 ms): a bend glides linearly over a fixed
- * duration, independent of step size (probe 33: 10-90% of 20-24 ms from 200c
- * to 4000c). 320 is the optimum on 33_ramp (-34.04 dB; 256: -31.45, 448:
- * -32.29) but per-rep edge timing reads 448-512 frames, a ~40% disagreement;
- * town.mid's rises and falls glide at different rates --
- * INVESTIGATE.adoc#i-bend-ramp. ponytail: one constant, no ceiling,
- * no magnitude keying, no per-source exemption -- the measurement says duration
- * does not depend on step size, so nothing here should either. */
-#ifndef RAMP_HORIZON_FRAMES
-#define RAMP_HORIZON_FRAMES (320 * RESAMPLE_FACTOR)
-#endif
-
-/* Sizes the held slope so phase_step reaches phase_step_target in exactly
- * `frames` samples; truncation residue is bounded, not corrected, since a zero
- * slope snaps immediately instead of crawling. */
-static void ramp_reaim(Voice *v, uint32_t frames)
+/* the LFO's segment bound [A:0x1891e]: the delay left, else 1/8 cycle,
+ * 0x20000/step (0x188fc), or 44100 when all four depths are 0 (0x188f0) */
+static uint32_t lfo_frames_to_change(const Voice *v)
 {
-    int64_t d = (int64_t) v->phase_step_target - (int64_t) v->phase_step;
-    /* the aim below already covers whatever was pending */
-    v->step_debt = 0;
-    /* Q8 per BASE_RATE frame */
-    int32_t slope = (int32_t) ((d << 8) / (int64_t) (frames / RESAMPLE_FACTOR));
-    if (slope == 0)
-    {
-        v->phase_step = v->phase_step_target;
-        v->phase_step_ramp_acc = 0;
-        v->ramp_left = 0;
-        v->phase_step_ramp_step = 0;
-        return;
-    }
-    v->phase_step_ramp_step = slope;
-    v->ramp_sub = 0;
-    v->ramp_left = frames;
+    const Artic *a = v->artic;
+    uint64_t delay = (uint64_t) a->lfo_delay_frames * RESAMPLE_FACTOR;
+    if (v->eg2_t < delay)
+        return (uint32_t) (delay - v->eg2_t);
+    if ((!a->lfo_pitch_cc1_cents && !a->lfo_pitch_inherent_cents &&
+         !a->lfo_atten_cc1_hdb && !a->lfo_atten_inherent_hdb) ||
+        !a->lfo_step)
+        return 44100 * RESAMPLE_FACTOR;
+    return 0x20000 / a->lfo_step * RESAMPLE_FACTOR;
 }
 
-/* render.c's accumulator has no arrival test; this counts
- * every active voice's ramp down and snaps it exactly on expiry, called AFTER
- * render_voice so the expiring chunk is still rendered with it first. */
-void voice_ramp_tick(uint32_t frames)
+/* 0x196f0 resets the bound to the device cap, (rate+19)/20 (0x12901), and
+ * the LFO, EG1 and EG2 lower it (0x194cc, 0x1950a, 0x195dd, 0x19619) */
+uint32_t voice_segment_frames(const Voice *v)
 {
-    for (int i = 0; i < NUM_VOICES; i++)
-    {
-        Voice *v = &g_voices[i];
-        if (!v->active || !v->ramp_left)
-            continue;
-        if (v->ramp_left > frames)
-        {
-            v->ramp_left -= frames;
-            continue;
-        }
-        v->ramp_left = 0;
-        v->phase_step = v->phase_step_target;
-        v->step_debt = 0;
-        v->phase_step_ramp_step = 0;
-        v->phase_step_ramp_acc = 0;
-    }
+    uint32_t seg = (BASE_RATE + 19) / 20 * RESAMPLE_FACTOR;
+    uint32_t n = lfo_frames_to_change(v);
+    if (n < seg)
+        seg = n;
+    n = voice_env_frames_to_change(v);
+    if (n < seg)
+        seg = n;
+    n = voice_eg2_render_frames_to_change(v);
+    if (n < seg)
+        seg = n;
+    return seg;
 }
 
-void voice_update_pitch(Voice *v)
+void voice_update_pitch_at(Voice *v, uint64_t t)
 {
     if (!v->active || !v->wave)
         return;
     /* Two-factor pitch: base (note-on, clamped, latched RPN1/RPN2) times live
      * bend/LFO/EG2 (clamped separately), the live delta from 0x195a2 */
-    int32_t bend_cents = synth_pitch_bend_cents(v->channel);
-    int32_t mod_cents = bend_cents
+    int32_t mod_cents = synth_pitch_bend_cents_at(v->channel, t)
                         /* `[A:0x189e4]` */
-                        + voice_lfo_cents(v)
+                        + voice_lfo_cents(v, t)
                         /* `[A:0x15838]` */
                         + (v->eg2_depth_cents == 0.0 ? 0 : v->eg2_cents);
     uint64_t raw =
         (uint64_t) v->wave->sample_rate * (uint64_t) v->base_ratio_q12;
     raw = (raw * (uint64_t)(uint32_t) cents_to_ratio_q12(mod_cents)) >> 12;
-    uint32_t new_target = (uint32_t) (raw / BASE_RATE);
-
-    /* Only bend is ramped: probes 32/33 carry no LFO or pitch EG, and
-     * routing them through the ramp cost 06_modwheel 3.2 dB and
-     * 26_other_gains 1.3 dB */
-    int bend_moved = (bend_cents != v->bend_cents_applied);
-    if (!bend_moved)
-    {
-        if (v->ramp_left)
-        {
-            int64_t moved =
-                (int64_t) v->phase_step +
-                ((int64_t) new_target - (int64_t) v->phase_step_target);
-            v->phase_step = (uint32_t) (moved < 0 ? 0 : moved);
-        }
-        else
-            v->step_debt +=
-                (int32_t) new_target - (int32_t) v->phase_step_target;
-    }
     v->mod_cents = mod_cents;
-    v->bend_cents_applied = bend_cents;
-    v->phase_step_target = new_target;
-
-    /* Bend ramp re-aimed instantly on target move, over a fixed horizon, not a
-     * shared clock's remainder: a shared clock made identical gestures glide at
-     * up to 2x different speeds (town.mid) */
-    if (bend_moved)
-        ramp_reaim(v, RAMP_HORIZON_FRAMES);
+    v->phase_step_target = (uint32_t) (raw / BASE_RATE);
 }
 
-/* Per-voice LFO clock; sub-chunked so a held note with no MIDI traffic still
- * oscillates */
-void voices_advance_lfo(uint32_t frames)
-{
-    for (int i = 0; i < NUM_VOICES; i++)
-    {
-        if (g_voices[i].active)
-            g_voices[i].lfo_elapsed += frames;
-    }
-}
+void voice_update_pitch(Voice *v) { voice_update_pitch_at(v, UINT64_MAX); }
 
 /* GAIN_CEILING = 4095/8192: TABLE[0] of the hdB->gain table (0x1bfc0) is the
  * per-voice ceiling, ~0.5 of computed unity (pmulhw on a signed lane) */
 #define GAIN_CEILING (4095.0 / 8192.0)
 
-/* Gain law: re-read live every block (mirrors
- * voice_update_pitch) so CC7/CC10/CC11/master-volume changes reach a held note;
+/* Gain law: read at every segment end (mirrors voice_update_pitch_at) so
+ * CC7/CC10/CC11/master-volume changes reach a held note;
  * atten_const_hdb (velocity+region attenuation) is fixed at note-on. */
 /* Pan law [A:0x19c12-0x19c2a]: one g_table_lin read forward/reversed, summed
  * into the attenuation before the clamp; the measured "unity at centre" is
@@ -419,18 +353,18 @@ static double atten_to_gain(int32_t atten_hdb)
     return (double) g_table_dbamp[i + 1000] / 8192.0;
 }
 
-void voice_update_gain(Voice *v)
+void voice_update_gain_at(Voice *v, uint64_t t)
 {
     if (!v->active)
         return;
-    int32_t chan_vol = g_table_vel[g_channels[v->channel].volume];
-    int32_t expr = g_table_vel[g_channels[v->channel].expression];
+    int32_t chan_vol = g_table_vel[synth_ctl_at(v->channel, CTL_VOL, t)];
+    int32_t expr = g_table_vel[synth_ctl_at(v->channel, CTL_EXPR, t)];
     int32_t atten_hdb = g_master_vol_hdb + chan_vol + expr +
                         v->atten_const_hdb +
                         voice_lfo(v, v->artic->lfo_atten_cc1_hdb,
-                                  v->artic->lfo_atten_inherent_hdb);
+                                  v->artic->lfo_atten_inherent_hdb, t);
 
-    int pan = (int) g_channels[v->channel].pan + v->artic->pan_cb;
+    int pan = (int) synth_ctl_at(v->channel, CTL_PAN, t) + v->artic->pan_cb;
     if (pan < 0)
         pan = 0;
     if (pan > 127)
@@ -440,6 +374,8 @@ void voice_update_gain(Voice *v)
     v->gain_l_target = atten_to_gain(v->atten_l_hdb);
     v->gain_r_target = atten_to_gain(v->atten_r_hdb);
 }
+
+void voice_update_gain(Voice *v) { voice_update_gain_at(v, UINT64_MAX); }
 
 int32_t voice_env_hdb(double env_level)
 {
@@ -468,18 +404,6 @@ uint32_t voice_stair_frames(uint32_t seg, int32_t d_att, int32_t d_cents)
             k = 1;
     }
     return (k + 3) & ~3u;
-}
-
-void voices_update_modulation(void)
-{
-    for (int i = 0; i < NUM_VOICES; i++)
-    {
-        if (g_voices[i].active)
-        {
-            voice_update_pitch(&g_voices[i]);
-            voice_update_gain(&g_voices[i]);
-        }
-    }
 }
 
 static Voice *find_free_primary(void)
@@ -570,14 +494,10 @@ static Voice *find_steal_candidate_asymmetric(void)
     return best;
 }
 
-static void start_release(Voice *v, int fast)
+/* EG1 and EG2 enter release at EG2 frame eg2_t */
+static void release_egs(Voice *v, int fast, uint64_t eg2_t)
 {
-    /* start_release: +0x138 set unconditionally (0x19ab6); this engine already
-     * collapses ScheduleFastRelease's two internal paths into one */
-    if (fast)
-        v->fast_release_committed = 1;
-    v->held = 0;
-    v->sustain_deferred = 0;
+    v->release_at = VOICE_NO_RELEASE;
     v->env_stage = ENV_RELEASE;
     double authored_s = timecents_to_seconds(v->artic->eg1_release_tc);
     double rel_s = authored_s;
@@ -592,19 +512,71 @@ static void start_release(Voice *v, int fast)
         if (rel_s > authored_s)
             rel_s = authored_s;
     }
-    if (!fast && rel_s < RELEASE_FLOOR_S)
-        rel_s = RELEASE_FLOOR_S;
     v->env_release_coef = exp_coef_scaled(rel_s, RELEASE_RATE_MULT);
     /* EG2 releases on both note-off paths; the fast-release clamp is
      * amplitude-only (0x19b16 vs 0x19b28) */
     if (v->eg2_off < 0)
-        v->eg2_off = (int64_t) (v->eg2_t / RESAMPLE_FACTOR);
+        v->eg2_off = (int64_t) (eg2_t / RESAMPLE_FACTOR);
 }
 
-/* [F] TOPUP_INTERVAL_FRAMES: the driver tops up once per service call
- * (0x12be7), whose length the audio stack picks. A wall-clock tick stands in.
- * Probes 20/21 need >=1024 frames (512 leaves 43 of 48 voices, 64 leaves 1);
- * HueArme-Weekend is flat from 512 up. 2048 ships --
+void voice_release_due(Voice *v, uint64_t eg2_t)
+{
+    release_egs(v, v->release_fast, eg2_t);
+}
+
+static void start_release(Voice *v, int fast)
+{
+    /* start_release: +0x138 set unconditionally (0x19ab6); this engine already
+     * collapses ScheduleFastRelease's two internal paths into one */
+    if (fast)
+        v->fast_release_committed = 1;
+    v->held = 0;
+    v->sustain_deferred = 0;
+    release_egs(v, fast, v->eg2_t);
+}
+
+/* an ordinary release from a dispatched event: the voice stops being held
+ * now (0x19a7e) and its EGs release at the event's time (0x19a6f) */
+static void release_at_event(Voice *v)
+{
+    if (!g_event_offset)
+    {
+        start_release(v, 0);
+        return;
+    }
+    v->held = 0;
+    v->sustain_deferred = 0;
+    v->release_at = voice_event_time();
+    v->release_fast = 0;
+}
+
+/* ScheduleFastRelease from a note-on: a voice still held, by key or pedal,
+ * releases fast at the event's time (0x19ae5-0x19b11); one whose note-off
+ * is still pending keeps that time (0x19ac7-0x19ade) */
+static void fast_release_at_event(Voice *v)
+{
+    if (v->release_at != VOICE_NO_RELEASE)
+    {
+        v->fast_release_committed = 1;
+        v->release_fast = 1;
+        return;
+    }
+    if (!v->held || !g_event_offset)
+    {
+        start_release(v, 1);
+        return;
+    }
+    v->fast_release_committed = 1;
+    v->held = 0;
+    v->sustain_deferred = 0;
+    v->release_at = voice_event_time();
+    v->release_fast = 1;
+}
+
+/* [F] TOPUP_INTERVAL_FRAMES: the driver tops up once per 1024-frame service
+ * call (0x12be7, 0x181fa). A wall-clock tick stands in. Probes 20/21 need
+ * >=1024 frames (512 leaves 43 of 48 voices, 64 leaves 1); 1024 scores
+ * -55.29 against 2048's -55.31 dB mean, so 2048 ships --
  * INVESTIGATE.adoc#i-envelope-cadence. */
 #ifndef TOPUP_INTERVAL_FRAMES
 #define TOPUP_INTERVAL_FRAMES (2048 * RESAMPLE_FACTOR) /* ~92.9ms */
@@ -679,7 +651,7 @@ void voice_note_on(int channel, int note, int velocity)
         {
             Voice *m = &g_voices[i];
             if (m->active && m->held && m->channel == channel)
-                start_release(m, 0);
+                release_at_event(m);
         }
     }
 
@@ -697,7 +669,7 @@ void voice_note_on(int channel, int note, int velocity)
         {
             Voice *t = &g_voices[i];
             if (t->active && t->channel == channel && t->note == note)
-                start_release(t, 1);
+                fast_release_at_event(t);
         }
     }
 
@@ -722,7 +694,7 @@ void voice_note_on(int channel, int note, int velocity)
             Voice *k = &g_voices[i];
             if (k != v && k->active && k->channel == channel &&
                 k->key_group == r->key_group && k->locale == locale)
-                start_release(k, 1);
+                fast_release_at_event(k);
         }
     }
 
@@ -757,28 +729,25 @@ void voice_note_on(int channel, int note, int velocity)
      */
     v->base_ratio_q12 = (uint32_t) cents_to_ratio_q12(v->base_cents);
 
-    /* LFO clock starts at note-on (0x19c48); advanced only by
-     * voices_advance_lfo */
+    /* LFO clock starts at note-on (0x19c48); render_voice sets it to each
+     * segment end */
     v->lfo_elapsed = 0;
     // EG2 reaches the pitch at the first segment (render.c), not at note-on
     v->eg2_off = -1;
     v->eg2_t = 0;
     v->eg2_cents = 0;
-    v->eg2_left = v->eg2_inc = v->eg2_acc = 0;
+    v->step_left = v->step_inc = v->step_acc = 0;
+    v->release_at = VOICE_NO_RELEASE;
 
-    voice_update_pitch(v);
+    /* evaluated at the note's own time */
+    uint64_t t0 = voice_event_time();
+    voice_update_pitch_at(v, t0);
     /* New note: plays at the true target from sample 0, no glide-in from
-     * whatever phase_step this recycled Voice slot last held -- the ramp is for
-     * modulation on an already-sounding voice, not note-on. */
+     * whatever phase_step this recycled Voice slot last held */
     v->phase_step = v->phase_step_target;
-    v->phase_step_ramp_step = 0;
-    v->phase_step_ramp_acc = 0;
-    v->ramp_left = 0;
     /* the driver zeroes its previous-segment values at note-on (0x18f23) */
-    v->step_debt = 0;
     v->prev_att_l = v->prev_att_r = v->prev_mod_cents = 0;
     v->stair_left = 0;
-    v->bend_cents_applied = synth_pitch_bend_cents(channel);
     v->phase_pos = 0;
 
     int no_loop = r->no_loop;
@@ -814,13 +783,14 @@ void voice_note_on(int channel, int note, int velocity)
 
     /* Pan: region's pan_cb fixed, channel CC10 combined live in
      * voice_update_gain; rising CC10 attenuates the left (probe 07) */
-    voice_update_gain(v);
+    voice_update_gain_at(v, t0);
     v->gain_l = v->gain_l_target;
     v->gain_r = v->gain_r_target;
     v->amp_left = 0;
     v->amp_step_l = v->amp_step_r = 0.0;
     v->amp_retire = 0;
     v->start_delay = g_event_offset;
+    v->starting = 1;
     /* amp_l/amp_r primed from envelope start level, matches driver's
      * nsamples==0 mixer priming [A:0x18fba]; at zero, every instant-attack
      * patch faded in over a segment (probe 14: 5x too quiet at 4 ms) */
@@ -926,7 +896,7 @@ void voice_note_off(int channel, int note)
             }
             else
             {
-                start_release(v, 0);
+                release_at_event(v);
             }
         }
     }
@@ -940,7 +910,7 @@ void voice_all_sound_off(int channel)
         Voice *v = &g_voices[i];
         if (v->active && v->channel == channel && v->held)
         {
-            start_release(v, 0);
+            release_at_event(v);
         }
     }
 }
@@ -956,7 +926,7 @@ void voice_all_notes_off(int channel)
             if (g_channels[channel].sustain != 0)
                 v->sustain_deferred = 1;
             else
-                start_release(v, 0);
+                release_at_event(v);
         }
     }
 }
@@ -968,7 +938,7 @@ void voice_sustain_lift(int channel)
         Voice *v = &g_voices[i];
         if (v->active && v->channel == channel && v->sustain_deferred)
         {
-            start_release(v, 0);
+            release_at_event(v);
         }
     }
 }

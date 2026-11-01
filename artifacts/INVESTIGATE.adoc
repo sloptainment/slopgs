@@ -6,16 +6,16 @@ standing in for either. Settled facts live in `src/unit.c` as assertions.
 
 *Do not read this file whole.* `grep -n '^== ' artifacts/INVESTIGATE.adoc`
 lists every entry, one line each, prefixed with its id. Jump to one with
-`grep -n '\[#i-release-floor\]' artifacts/INVESTIGATE.adoc` and Read about
+`grep -n '\[#i-event-times\]' artifacts/INVESTIGATE.adoc` and Read about
 40 lines from there. Source comments and `unit.c` TODO reasons cite these
-ids (`INVESTIGATE.adoc#i-release-floor`).
+ids (`INVESTIGATE.adoc#i-event-times`).
 
 Every entry has the same four fields: *Known* (what is settled, with VMAs),
 *Open* (what is not), *Settle by* (the observation that would close it),
 *Where* (code and tests). Delete an entry once it is closed; the closing
 assertion in `unit.c` is the record.
 
-Corpus baseline: *MEAN r 0.993, residual −42.25 dB*.
+Corpus baseline: *MEAN r 0.998, residual −55.31 dB*.
 
 [#i-env-sum-residuals]
 == i-env-sum-residuals: five items 0.3–1.6 dB worse since EG1 joined the pre-clamp sum
@@ -31,73 +31,73 @@ it at a different instant than `0x19490` samples EG1.
 Settle by:: Per-segment oracle gain on `04_envelope` against `voice_amp`.
 Where:: `voice.c` `voice_env_hdb`, `render.c` segment top; no test.
 
-[#i-release-floor]
-== i-release-floor: RELEASE_FLOOR_S has no counterpart in the driver ([F], audible)
-
-Known:: `0x197dc` sets `release = release * L / 1000` and nothing else
-(`0x19801`, `0x19815`). Removing the 60 ms floor: mean −32.48 → −32.28 dB;
-`37_rac_volume_order` −30.7 → −44.6, `sine-gate`/`sine2` ~0.8 dB better;
-`25_pan_law` +5.8, `27_gain_curves` +5.4, `45`/`46`/`40` +3.4–3.8,
-`serum_opening` +1.5 dB worse.
-Open:: What the floor compensates for. Short releases render as one linear
-segment in the driver (see <<i-segment-length>>); the engine's release is
-per-sample geometric.
-Settle by:: Implement segment-shaped release and re-run the A/B without the
-floor.
-Where:: `voice.c` `RELEASE_FLOOR_S`; unit.c TODO `S5.6 a 10 ms authored release`.
-
-[#i-segment-length]
-== i-segment-length: the engine's segment is a fixed 256 frames, the driver's is per voice ([F])
-
-Known:: `0x19644` (per voice, from `0x130d3`) renders in segments. At
-`0x196cd` the segment end is min(now + `+0x108`, buffer end); `0x196f0`
-resets `+0x108` to the cap `[+0x104]+0x18` = `(rate+19)/20` = 1103 frames
-(`0x12901`); then pitch (`0x195a2`, called at `0x1970c`) and volume
-(`0x19490`) are evaluated at the segment end, and each lowers `+0x108` to
-its sources' next change: EG1 and the LFO on the volume side (`0x194cc`,
-`0x1950a`), the LFO and EG2 on the pitch side (`0x195dd`, `0x19619`). At
-note-on `+0x108` starts at the LFO bound (`0x19c56`) and the EGs lower it
-(`0x19c7a`–`0x19ce3`). The LFO bound (`0x1891e`) is the remaining delay,
-then `0x20000/step` frames (1/8 cycle); an LFO with all four depths 0
-reports 44100 (`0x188f0`). Every gm.dls patch seen so far carries CC1→pitch
-47 c, so its segment is ≤ 459 frames at 6 Hz (Sine, Square) and 530 at
-5.2 Hz (Piano); probes 45/46 measure ~512 and probe 44 implies 24–28 ms.
-The mixer ramps gain linearly in amplitude to the value at the segment end
-(`0x18fba`). The buffer is the caller's KS buffer (`0x181fa`). Pitch is
-not a smooth ramp: the step is held and refreshed in stairs
-(<<i-stair-cap>>).
-EG2's bound (`0x19619`) is modelled (`voice_eg2_frames_to_change`); the
-LFO's and the cap are not.
-Open:: Whether the per-voice minimum also fixes the
-decay-dominated items: a fixed 512 cost `08_reverb` +9.5 and `03_velocity`
-+7.1 dB (sweep at the old −31 dB baseline: 128 −31.18, 256 −31.14,
-512 −30.90; re-run against −32.98).
-Settle by:: Replace the unit.c TODO first (its reason, "segment length is
-the caller's KS buffer, not a driver constant", predates this): assert the
-LFO bound `0x20000/step` and 44100 at zero depth, and the segment as the
-minimum above. Then model segments per voice in place of
-`GAIN_SEGMENT_FRAMES` and gate on the corpus, watching `08_reverb`,
-`03_velocity`, `13_edge` and probes 44–46.
-Where:: `render.c` `GAIN_SEGMENT_FRAMES`; `voice.h` `LFO_UPDATE_FRAMES`,
-`SERVICE_BLOCK_FRAMES` (also smf.c's event split); unit.c TODO `S6.6
-ramp/envelope update cadence value`.
-
 [#i-envelope-cadence]
-== i-envelope-cadence: envelopes and top-up run per sample / per tick, not per service call ([F])
+== i-envelope-cadence: top-up runs on a 2048-frame tick, the driver's once per 1024-frame Mix ([F])
 
 Known:: `0x13054` drains due events, advances every voice once and promotes
-controllers once per call; the frame count comes from the KS descriptor
-(`0x181da`). Top-up runs once per dispatcher call (`0x12be7`). Probes 20/21
-need a top-up period ≥ 1024 frames (512 leaves 43 of 48 voices). Note-off
-lattice 0–27 ms (probe 46). `0x12860` derives per-rate constants never
-traced: `device+0x10` = rate/100 (220), `device+0x188` = rate·40/1000 (882),
-`device+0x1a0` = 20 at 22050.
-Open:: The EG state machine's own cadence and what feeds the per-call ramp
-steps; what the `0x12860` constants drive.
-Settle by:: Trace readers of `device+0x10`, `+0x188`, `+0x1a0`; trace
-`0x19644` and callees.
-Where:: `voice.c` `TOPUP_INTERVAL_FRAMES`, `voice_step_envelope`; unit.c TODOs
+controllers once per call. FillBuffer always hands it 1024 frames
+(`0x181fa`; unit.c "a service call (ControlLogic::Mix) is 1024 frames"),
+so top-up, which runs once per call (`0x12be7`), runs every 1024 frames.
+Probes 20/21 need a top-up period ≥ 1024 frames (512 leaves 43 of 48
+voices). `0x12bd6` passes top-up the call's end time (`0x12bdf`), so its
+fast releases may start there, not at the call's start. `0x12860` derives
+per-rate constants never traced: `device+0x10` = rate/100 (220),
+`device+0x188` = rate·40/1000 (882), `device+0x1a0` = 20 at 22050.
+A/B, `TOPUP_INTERVAL_FRAMES` 2048 (shipped) → 1024 (the driver's): mean
+−55.31 → −55.29 dB; `21_steal_policy` −49.24 → −48.58, `CrystalOscillator`
+−40.16 → −39.94, `10_polyphony` −25.05 → −25.27.
+Open:: Whether top-up's releases start at the call's end, which the engine
+does not model and may be what 1024 is missing; what the `0x12860`
+constants drive.
+Settle by:: Trace `0x12b6a`'s use of its time argument, model it, re-run
+the A/B and replace the S5.4 TODO.
+Where:: `voice.c` `TOPUP_INTERVAL_FRAMES`, `voice_topup_tick`; unit.c TODOs
 `S5.4 top-up cadence value`, `S3.4.1/S3.4.2 envelope update cadence`.
+
+[#i-eg1-bounds]
+== i-eg1-bounds: EG1 bounds a segment only at its attack and decay end
+
+Known:: A segment ends at min(cap, LFO, EG1, EG2), clipped to the Mix call
+(unit.c). EG2 is read at its attack end and at a decay's or release's
+quarter, half and end (`0x18a7a`). The engine's EG1 is per-sample
+geometric and bounds a segment only at its attack and decay end; in
+sustain and release it bounds nothing, so a release runs to the LFO bound
+or the cap. An EG's first bound is its attack (`0x198b6`), so a zero attack
+makes a zero-length first segment that primes the mixer at the note's time
+(unit.c, for EG2). The engine leaves the previous-segment sums that size
+the first stair at 0 (`0x18f23`).
+Open:: Whether EG1 (`0x18d28`) uses `0x18a7a`'s reads; whether the priming
+segment also sets the previous-segment sums. Removing the release floor
+cost `Kot_and_A64-GENERAL_SERUM` 0.91 dB, `serum_opening` 0.55 and
+`HueArme-Weekend` 0.54 (mean −50.01 → −55.20); against the build before
+segments were per voice, `41_sustain_decay_curve` is still behind
+(−63.09 → −61.33).
+Settle by:: Disassemble `0x18d28`'s bound path; gdb the oracle on a
+zero-attack voice's first two segments.
+Where:: `voice.c` `env_base_frames_to_change`, `voice_segment_frames`;
+`render.c` `starting`.
+
+[#i-event-times]
+== i-event-times: which dispatched events act at their own time
+
+Known:: RecordMIDI queues every event with its time; at Mix start
+`0x12bd6` pops each note event with its time (`0x16cac`) and calls the
+note-off path `0x19a2c` with it (`0x12c53`, `0x12cb9`, `0x12cf5`,
+`0x12da5`), which releases the EGs at max(time, start + 1) (`0x19a3d`;
+unit.c "A note-off releases at its own time"). ScheduleFastRelease
+(`0x19aa4`) uses the event's time for a voice still held, or the pending
+note-off's (`+0x128`) for one already released. Live controllers are
+queued and folded at the call's end (`0x16b46`, unit.c). The engine times
+note-off, CC120, CC123, the Mono release, CC64's lift and a note-on's
+retrigger and key-group choke this way.
+Open:: Which call site is which event; whether CC64's lift releases at its
+own time; Master Volume is applied at dispatch, its driver path unknown;
+the engine's queue holds 64 nodes per controller, the driver's limit
+(`0x16bae`'s allocation) unknown.
+Settle by:: Map the four `0x19a2c` call sites to their events; trace CC64
+and Master Volume (`7F 7F 04 01`) from `0x131c0` to their consumers.
+Where:: `voice.c` `release_at_event`, `fast_release_at_event`; `synth.c`
+`ctl_record`, `CTL_QUEUE`.
 
 [#i-applause-attack]
 == i-applause-attack: 126 Applause's attack sits 7% above linear in the oracle
@@ -111,56 +111,6 @@ Settle by:: Dump the oracle's 126 attack level per sample and compare with
 Table C at the same `elapsed`.
 Where:: `voice.c` `ENV_ATTACK_TABLE_C`.
 
-[#i-bend-ramp]
-== i-bend-ramp: pitch-bend ramp duration 320 frames vs measured 448–512 ([F])
-
-Known:: A bend glides linearly over a fixed duration independent of step
-size (probe 33, 10–90% 20–24 ms for 200–4000 c). 320 frames is the optimum on
-`33_ramp` (−34.04 dB); per-rep edge timing reads 448–512. The reference's
-bend timing clusters on a 512-frame grid and is bimodal (4.2 and 16.5 ms).
-`town.mid` rises and falls glide at different rates (~2.2 vs 4.2 c/ms).
-Open:: The duration, the bimodality, the asymmetry.
-Settle by:: Re-derive both readings; `32.flac`'s alignment drifts 422 ms
-non-linearly, so do not fit against it.
-Where:: `voice.c` `RAMP_HORIZON_FRAMES`, `ramp_reaim`; no test.
-
-[#i-stair-cap]
-== i-stair-cap: the pitch stair is capped at the engine's 256-frame segment ([F])
-
-Known:: The driver holds the phase step through a segment and refreshes it
-every K frames, the first K−1 frames in (`0x1a360`; `voice_stair_frames`),
-K = (8N / (max(ΔL, ΔR, 2·Δcents) / 2) + 3) & ~3 clamped to 4..512, where N
-is the segment and Δ the change since the previous segment (`0x19077`);
-checked against all 199 segments of 122 key 36. Held while EG2 rises, the
-step lags by K/2 frames: that is the entry's former "+2.28 c sharp", and
-the drift reverses in release because EG2 then falls. Drift over the held
-note went from −90 to −46 frames. The engine caps K at its own segment N=256;
-the driver does not, and when K ≥ N its step is not refreshed that segment.
-A/B on the capped build, 52 items: mean −42.31 → −42.45, `52_eg2_pitch`
-−39.32 → −44.52, `51_lfo_tremolo` −46.59 → −43.56. Uncapped: mean −40.16,
-52 −19.99, 51 −24.16 (`06_modwheel` −40.66 → −32.98): an N of 256 freezes
-the step where the driver's N (459 on an LFO voice, 1024 at the oracle's
-buffer) would not.
-The mixer does not jump to the new step: it adds (S1−S0)·K·256/N (Q8) every
-K frames, S0 being the previous segment's end value and S1 this segment's
-(`0x190c8`, `0x1a41d`), and the next segment starts from S1 whatever landed
-(`0x19444`). Shipped for EG2 only, with EG2 read at the segment end and
-bounding the segment as `0x18a7a` does (attack, then the decay at its half and
-end): 051 key 48's +219 c ramp now lands within 0.08 frame of the oracle's
-(was 5.7), mean −45.02 → −45.49, `52_eg2_pitch` −44.59 → −49.71. Four items
-lost ≤0.29 dB (`42_multitrack_same_tick`, `HueArme-Weekend`,
-`CrystalOscillator`, `11_drums`), cause unconfirmed.
-Open:: The LFO's and the bend's share of the step still lands whole at the
-first stair and is read at the chunk start, not the segment end. How much of
-the remaining −46 frames and of 51's loss is N. Whether the XP buffer's N
-changes the lag the references show. Whether a missing EG2 release time
-(engine: 0, so the pitch drops at once) is what the driver does.
-Settle by:: Give each voice its own segment N (<<i-segment-length>>), drop
-the cap, re-run the A/B above.
-Where:: `render.c` `stair_k`; `voice.c` `voice_stair_frames`,
-`voice_update_pitch` (`step_debt`); unit.c "Pitch follows LFO/EG2 in
-stairs".
-
 [#i-vibrato-depth]
 == i-vibrato-depth: the reference's vibrato is ~5% shallower than the render
 
@@ -170,15 +120,15 @@ for both) gives reference 44.1 c at 5.215 Hz and render 46.2 c at 5.185 Hz.
 Phase relative to each note's own onset differs by 28°, which is within
 the onset uncertainty. This segment is the whole `13_edge` change (−38.73 dB before
 `edf5b31`, −38.55 now).
-Open:: Where the ~2 c goes. Suspect: the driver samples the LFO once per
-segment (≤ 530 frames here, <<i-segment-length>>) where the engine samples
-every 64; a held or ramped sinusoid sampled at 1/8 cycle loses 2–5% of its
-fundamental.
+Open:: Where the ~2 c goes. The engine now reads the LFO once per segment
+at its end, as the driver does (`0x195ba`; ≤ 530 frames here), which a
+sinusoid sampled at 1/8 cycle loses 2–5% of its fundamental to; `13_edge`
+against the oracle went −46.07 → −54.47 dB with it. Not re-measured
+against the reference.
 Settle by:: Probe 51's reference (`probe-results/51.flac`): Shakuhachi's
 18 c inherent vibrato and Tremolo Str's 10 Hz tremolo at CC1=0, measured
 the same way.
-Where:: `voice.c` `voice_lfo`, `voices_advance_lfo`; `voice.h`
-`LFO_UPDATE_FRAMES`; no test.
+Where:: `voice.c` `voice_lfo`, `lfo_frames_to_change`; no test.
 
 [#i-bankprog-lookahead]
 == i-bankprog-lookahead: Bank/Program look-ahead within a tick ([F])
@@ -186,7 +136,11 @@ Where:: `voice.c` `voice_lfo`, `voices_advance_lfo`; `voice.h`
 Known:: At one tick a note takes the last Program Change before the next
 note event of that tick (probe 40 13/13, probe 38 7/8). The driver's getter
 (`0x16c50`) adopts every pending value with key ≤ the query time, which
-does not predict this.
+does not predict this. Notes are set up at Mix start, once the whole
+call's events are queued (`0x12bd6` pops each note with its time,
+`0x16cac`), and read a controller at the note's own time (`0x12dc3`), so a
+same-time value after the note in file order is adopted; unit.c asserts
+it for pitch bend. Whether Program is one of those queues is unverified.
 Open:: The mechanism; probe 38 case F contradicts probe 40 case G on
 identical input.
 Settle by:: Re-capture both cases twice.
@@ -209,9 +163,15 @@ Where:: `synth.c` `part_to_channel`; no test.
 == i-cc11-gating: fast CC11 gating leaves silent gaps in the reference
 
 Known:: GENERAL_SERUM measure 226 gates CC11 0/127 every 12–25 ms; the
-reference has near-silent spans of 25–90 ms, the render none.
-Open:: Whether the segment model (<<i-segment-length>>) explains it.
-Settle by:: Re-measure against the current segment model.
+reference capture has near-silent spans of 25–90 ms. CC7/CC11 are now
+read at segment ends (unit.c "Expression is read at the segment end too"),
+and the item against the oracle went −31.10 → −35.17 dB. On wild-sweep the
+oracle's CC11 127→0 fall takes ~30 ms and stops near −64 dB, the
+capture's ~23 ms near −77 dB.
+Open:: Whether the capture's gaps match the oracle's; the capture is
+real-time, the oracle is not.
+Settle by:: Compare the capture, the oracle and the render over measure
+226.
 Where:: no test.
 
 [#i-kmixer]
@@ -229,20 +189,21 @@ Where:: `src/vsti/vsti.c` models it; the engine does not.
 == i-rate-parity: 6 items fail rate_parity.py from aliasing ×1 has and ×2 does not
 
 Known:: The engine is rate-exact: every ×2 frame 2n equals ×1 frame n bit for
-bit on all 70 corpus MIDIs (silent tails aside: the CLI's 4096-frame stop
-check is 2048 ×1 frames at ×2). Phase is in `PHASE_ONE` units, and event
+bit on all 71 corpus MIDIs (silent tails aside: the CLI's 4096-frame stop
+check is 2048 ×1 frames at ×2). A segment ends at a Mix call's end, so
+`smf.c` renders a song's tail on the block grid too. Phase is in `PHASE_ONE` units, and event
 times, the bend ramp, EG1 and the amplitude ramp all step on the
 `BASE_RATE` grid. `rate_parity.py` (soxr) still fails these:
 +
 [%autowidth]
 |===
 |item |env_r |pitch_c |band_db
-|02_keyrange |0.9714 |0.00 |0.02
-|30_tune_clamp_bend |0.9054 |0.02 |0.71
-|31_tune_clamp_bend_sine |0.8189 |0.00 |0.00
-|radio |0.9264 |1173.09 |6.44
-|wild-sweep |0.9879 |0.03 |0.07
-|Strobe-faffaeefafaefae |0.9928 |0.06 |0.09
+|02_keyrange |0.9707 |0.00 |0.02
+|30_tune_clamp_bend |0.9122 |0.01 |0.67
+|31_tune_clamp_bend_sine |0.8176 |0.00 |0.00
+|radio |0.9313 |1170.86 |6.77
+|wild-sweep |0.9891 |0.02 |0.06
+|Strobe-faffaeefafaefae |0.9929 |0.05 |0.09
 |===
 +
 Each is content above 11025 Hz: ×1 folds it into the band, ×2 renders it
@@ -267,9 +228,8 @@ Each is unrecovered; none changes what slopgs renders today.
 * Whether a loop end past the decoded data is clamped.
 * `device+0xf10` (RPN select) at device-add: nothing writes it.
 * Any velocity-side reader of the linear table `0x1bfd4` (pan reads it).
-* Where promoted CC7/CC11 values become gain (the table use is asserted).
 * `articBlock+0x38`'s identity; the device object at `voice+0x104` beyond
-  `+0x0/+0x4/+0x8/+0xc/+0x18`; the `+0x118` timestamp pair.
+  `+0x0/+0x4/+0x8/+0xc/+0x18`.
 * Purpose of the `edit` chunk (5 sites) and of ptbl placeholder `+0x2f`;
   `0x1469e`'s field for a wave object.
 * Why the pool splits 48+6 rather than 54 flat.

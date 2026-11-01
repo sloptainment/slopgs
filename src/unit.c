@@ -1979,7 +1979,7 @@ static void t_voice(void)
 
                 /* mid-note RPN2 change */
                 g_channels[ch].rpn2_coarse_cents = 700;
-                voices_update_modulation();
+                voice_update_pitch(v);
                 is_int(v->phase_step_target, target_before,
                        "S3.3.2(c): RPN2 changed on a HELD note does not retune "
                        "it (latched at note-on, not live)");
@@ -1992,7 +1992,7 @@ static void t_voice(void)
                     uint32_t d1 = (uint32_t) vo_bend_raw[bi] & 0x7Fu,
                              d2 = ((uint32_t) vo_bend_raw[bi] >> 7) & 0x7Fu;
                     synth_midi(0xE0u | (uint32_t) ch, d1, d2);
-                    voices_update_modulation();
+                    voice_update_pitch(v);
                     int32_t bend_cents = synth_pitch_bend_cents(ch);
                     int32_t ratio = vo_cents_to_ratio_q12(bend_cents);
                     uint64_t raw64 =
@@ -2190,13 +2190,14 @@ static void t_voice(void)
      * ------------------------------------- */
     tap_diag("--- S5.4/S3.4.1 open cadence items ---");
     todo_ok(0,
-            "the driver tops up once per service call (0x12be7), whose length "
-            "the audio stack picks; TOPUP_INTERVAL_FRAMES is an [F] stand-in "
-            "-- INVESTIGATE.adoc#i-envelope-cadence",
+            "the driver tops up once per 1024-frame service call (0x12be7, "
+            "0x181fa); TOPUP_INTERVAL_FRAMES 2048 is an [F] that 1024 does "
+            "not beat -- INVESTIGATE.adoc#i-envelope-cadence",
             "S5.4 top-up cadence value (mechanism itself is covered above)");
     todo_ok(0,
-            "envelope state advances once per service call, frame count "
-            "caller-supplied (0x13054) -- INVESTIGATE.adoc#i-envelope-cadence",
+            "envelope state advances once per 1024-frame service call "
+            "(0x13054, 0x181fa); the engine steps EG1 per sample and reads it "
+            "at segment ends -- INVESTIGATE.adoc#i-envelope-cadence",
             "S3.4.1/S3.4.2 envelope update cadence");
 
     voice_pool_reset();
@@ -2205,8 +2206,8 @@ static void t_voice(void)
 
 /* t_render: the mixer. */
 
-/* render_frames() always recomputes gain via voices_update_modulation(),
- * overwriting any gain/amp priming -- so this fixture forces the
+/* render_frames() recomputes gain at every segment end, overwriting any
+ * gain/amp priming -- so this fixture forces the
  * VO_GAIN_CEILING clamp instead, which lands on the same value regardless of
  * channel/pan state. */
 /* the hdB->gain table's own ceiling, TABLE[0]==4095 of 8192 (0x1bfc0) */
@@ -2310,6 +2311,8 @@ static void t_render(void)
         g_voices[0].phase_pos = 0;
         /* unity: one sample index per output frame */
         g_voices[0].phase_step = 1u << 12;
+        /* the step each segment re-reads from the base ratio */
+        g_voices[0].base_ratio_q12 = g_voices[0].phase_step / RESAMPLE_FACTOR;
         render_frames(buf, N);
         int unity_ok = 1;
         for (int i = 0; i < N; i++)
@@ -2322,6 +2325,8 @@ static void t_render(void)
         vo_render_fixture(&g_voices[0], &vo_r_wave, 20, 0);
         g_voices[0].phase_pos = 0;
         g_voices[0].phase_step = 1u << 11; /* half rate */
+        /* the step each segment re-reads from the base ratio */
+        g_voices[0].base_ratio_q12 = g_voices[0].phase_step / RESAMPLE_FACTOR;
         render_frames(buf, N);
         int half_ok = 1;
         for (int i = 0; i < N; i++)
@@ -2512,6 +2517,8 @@ static void t_render(void)
         g_voices[0].phase_pos = (8u << 12) - 50u;
         /* crosses sample_end this frame */
         g_voices[0].phase_step = 100;
+        /* the step each segment re-reads from the base ratio */
+        g_voices[0].base_ratio_q12 = g_voices[0].phase_step / RESAMPLE_FACTOR;
         {
             static int16_t buf1[2];
             render_frames(buf1, 1);
@@ -2529,6 +2536,8 @@ static void t_render(void)
         g_voices[0].loop_len_s = 0;
         g_voices[0].phase_pos = (5u << 12) - 40u;
         g_voices[0].phase_step = 100;
+        /* the step each segment re-reads from the base ratio */
+        g_voices[0].base_ratio_q12 = g_voices[0].phase_step / RESAMPLE_FACTOR;
         {
             static int16_t buf1[2];
             render_frames(buf1, 1);
@@ -2573,7 +2582,6 @@ static void t_render(void)
             v->wave = w24;
             v->channel = ch;
             v->base_ratio_q12 = 4096; /* unity */
-            v->bend_cents_applied = 0;
             voice_update_pitch(v);
             /* base_ratio_q12 */
             uint64_t raw = (uint64_t) w24->sample_rate * 4096u;
@@ -2592,11 +2600,8 @@ static void t_render(void)
      * ------------------------------- */
     tap_diag("--- S6.6/S6.7/S6.2/S6.4.1 open or not-applicable items: not "
              "asserted ---");
-    todo_ok(0,
-            "segment length is the caller's KS buffer, not a driver constant; "
-            "GAIN_SEGMENT_FRAMES is an [F] stand-in -- "
-            "INVESTIGATE.adoc#i-segment-length",
-            "S6.6 ramp/envelope update cadence value");
+    tap_diag("S6.6 ramp/envelope update cadence: asserted with the segment "
+             "bound in t_findings_live");
     tap_diag(
         "S6.2/S6.2.1/S6.2.2 (MMX/scalar dispatch, CPU-capability gate) and "
         "S6.4.1/S6.4.7 (stack-arg frame-count doubling): no analog exists in "
@@ -3836,8 +3841,7 @@ static void t_findings_live(void)
            wraps to index 33 */
         v->artic->lfo_step = 237;
         v->artic->lfo_delay_frames = 100;
-        v->lfo_elapsed = 0;
-        voices_advance_lfo(5100);
+        v->lfo_elapsed = 5100;
         lfo = 64 * -1000 / 127 * g_table_sine[33] / 100;
         voice_update_pitch(v);
         raw = ((uint64_t) 22050 * 4096u *
@@ -3978,11 +3982,9 @@ static void t_findings_live(void)
         v->artic = &a;
         voice_note_off(3, 50);
         double want = rt_pow(10.0, -(96.0 / 20.0) / (0.010 * RENDER_RATE));
-        todo_ok(fabs(v->env_release_coef - want) < 1e-9,
-                "RELEASE_FLOOR_S is an [F] stand-in; removing it regresses "
-                "the corpus mean -- INVESTIGATE.adoc#i-release-floor",
-                "S5.6 a 10 ms authored release stays 10 ms (no floor) "
-                "[A:0x19801],[A:0x19815]");
+        ok(fabs(v->env_release_coef - want) < 1e-9,
+           "S5.6 a 10 ms authored release stays 10 ms (no floor) "
+           "[A:0x19801],[A:0x19815]");
         voice_pool_reset();
     }
 
@@ -4183,6 +4185,38 @@ static void t_findings_live(void)
         synth_construct();
     }
 
+    tap_diag("--- When K >= N the step is not refreshed in that segment; the "
+             "next one starts from S1 [A:0x1a360],[A:0x19444] ---");
+    {
+        static int16_t z[64];
+        static Wave w;
+        w.sample_rate = BASE_RATE;
+        w.samples = z;
+        w.sample_count = 64;
+        synth_construct();
+        voice_pool_reset();
+        Voice *v = &g_voices[0];
+        vo_render_fixture(v, &w, 64, 0);
+        v->loop_len_s = 64;
+        v->base_ratio_q12 = 4096;
+        voice_update_pitch(v);
+        v->phase_step = v->phase_step_target;
+        static int16_t buf[8 * RESAMPLE_FACTOR * 2];
+        render_frames(buf, 8 * RESAMPLE_FACTOR);
+        uint32_t s0 = v->phase_step;
+        // +1 c: K = (8*8/1 + 3) & ~3 = 64 against N = 8
+        synth_midi(0xE0, 41, 64);
+        render_frames(buf, 8 * RESAMPLE_FACTOR);
+        is_int(v->phase_step, s0,
+               "a +1 c bend over an 8-frame segment (K = 64) leaves the step "
+               "where it was");
+        render_frames(buf, RESAMPLE_FACTOR);
+        is_int(v->phase_step, v->phase_step_target,
+               "...and the next segment starts on it");
+        voice_pool_reset();
+        synth_construct();
+    }
+
     tap_diag("--- EG2 is exact linear permille, read at segment ends, and "
              "bounds the segment [A:0x18a7a] ---");
     {
@@ -4219,6 +4253,227 @@ static void t_findings_live(void)
                "release is 631 permille (level at note-off) * 50/100 of 219 c");
         is_int(voice_eg2_cents(v, 400), 0, "release ends at 0");
         voice_pool_reset();
+    }
+
+    tap_diag("--- The driver mixes in 1024-frame calls: FillBuffer allocates "
+             "0x1000 bytes and hands Mix 0x1000>>2 frames [A:0x184c0],"
+             "[A:0x181fa]-[A:0x18206] ---");
+    is_int(SERVICE_BLOCK_FRAMES, 1024 * RESAMPLE_FACTOR,
+           "a service call (ControlLogic::Mix) is 1024 frames");
+
+    tap_diag("--- A segment ends at min(cap, LFO, EG1, EG2) from its start, "
+             "and at the Mix end [A:0x196cd]-[A:0x196f0] ---");
+    {
+        /* 0x196f0 resets the bound to the device cap (rate+19)/20 (0x12901)
+           before pitch and volume lower it. The LFO's bound is the delay
+           left (0x18945), else 0x20000/step, or 44100 when all four depths
+           are 0 (0x188d8-0x188fc). */
+        static Wave w;
+        static Artic a;
+        Voice *v = &g_voices[0];
+        voice_pool_reset();
+        vo_render_fixture(v, &w, 1, 0);
+        v->artic = &a;
+        is_int(voice_segment_frames(v), 1103 * RESAMPLE_FACTOR,
+               "no LFO depth and a settled EG: the cap, (22050+19)/20 frames");
+        a.lfo_step = 237;
+        a.lfo_pitch_cc1_cents = 50;
+        is_int(voice_segment_frames(v), 0x20000 / 237 * RESAMPLE_FACTOR,
+               "any LFO depth bounds a segment at 1/8 cycle, 0x20000/step");
+        a.lfo_delay_frames = 1000;
+        v->eg2_t = 300 * RESAMPLE_FACTOR;
+        is_int(voice_segment_frames(v), 700 * RESAMPLE_FACTOR,
+               "inside the LFO delay the bound is the delay left");
+        voice_pool_reset();
+    }
+
+    tap_diag("--- Live controllers are queued with their event time and read "
+             "at the segment end [A:0x16c50],[A:0x1970c],[A:0x19720]; Mix "
+             "folds what is older than its end [A:0x16b46] ---");
+    {
+        synth_construct();
+        int ch = 4;
+        uint64_t t0 = g_now;
+        voice_set_event_offset(100 * RESAMPLE_FACTOR);
+        synth_midi(0xE0 | ch, 0, 96);
+        voice_set_event_offset(230 * RESAMPLE_FACTOR);
+        synth_midi(0xE0 | ch, 0, 32);
+        voice_set_event_offset(0);
+        is_int(synth_ctl_at(ch, CTL_BEND, t0 + 99 * RESAMPLE_FACTOR), 8192,
+               "before its time a bend reads the value it replaces");
+        is_int(synth_ctl_at(ch, CTL_BEND, t0 + 100 * RESAMPLE_FACTOR), 12288,
+               "from its own time on, the bend reads its value");
+        is_int(synth_ctl_at(ch, CTL_BEND, t0 + 230 * RESAMPLE_FACTOR), 4096,
+               "until the next one's time, inclusive");
+        static int16_t buf[1024 * RESAMPLE_FACTOR * 2];
+        render_frames(buf, SERVICE_BLOCK_FRAMES);
+        is_int(synth_ctl_at(ch, CTL_BEND, t0), 4096,
+               "Mix folds every value older than its end into the current one");
+        voice_pool_reset();
+        synth_construct();
+    }
+    {
+        /* A ramp wave at half speed, no LFO, settled EG: the segment is the
+           whole 1024-frame call, read at its end */
+        static int16_t ramp[1024];
+        for (int i = 0; i < 1024; i++)
+            ramp[i] = (int16_t) (i * 32);
+        static Wave w;
+        w.sample_rate = BASE_RATE;
+        w.samples = ramp;
+        w.sample_count = 1024;
+        static int16_t none[1024 * RESAMPLE_FACTOR * 2],
+            got[1024 * RESAMPLE_FACTOR * 2];
+        const int ch = 5;
+        const uint32_t n = SERVICE_BLOCK_FRAMES;
+        Voice *v = &g_voices[0];
+        /* case: 0 nothing, 1 bend pulse, 2 bend step, 3 CC11 pulse */
+        for (int c = 0; c < 4; c++)
+        {
+            synth_construct();
+            vo_render_fixture(v, &w, 1024, ch);
+            v->note = 60;
+            v->held = 1;
+            v->base_ratio_q12 = 2048;
+            v->atten_const_hdb = -2000;
+            // an octave's bend, so its glide shows within 99 frames
+            g_channels[ch].pb_range_cents = 1200;
+            voice_update_pitch(v);
+            voice_update_gain(v);
+            v->phase_step = v->phase_step_target;
+            v->amp_l = voice_amp(v->atten_l_hdb, 0);
+            v->amp_r = voice_amp(v->atten_r_hdb, 0);
+            uint32_t s = v->phase_step;
+            if (c == 1 || c == 2)
+            {
+                voice_set_event_offset(100 * RESAMPLE_FACTOR);
+                synth_midi(0xE0 | ch, 0x7F, 0x7F);
+            }
+            if (c == 1)
+            {
+                voice_set_event_offset(200 * RESAMPLE_FACTOR);
+                synth_midi(0xE0 | ch, 0, 64);
+            }
+            if (c == 3)
+            {
+                voice_set_event_offset(100 * RESAMPLE_FACTOR);
+                synth_midi(0xB0 | ch, 11, 0);
+                voice_set_event_offset(300 * RESAMPLE_FACTOR);
+                synth_midi(0xB0 | ch, 11, 127);
+            }
+            voice_set_event_offset(0);
+            render_frames(c ? got : none, n);
+            if (c == 1)
+                ok(memcmp(got, none, sizeof none) == 0,
+                   "a bend that comes and goes inside one segment is never "
+                   "heard");
+            if (c == 2)
+            {
+                ok(v->phase_step > s && got[99 * RESAMPLE_FACTOR * 2] !=
+                                            none[99 * RESAMPLE_FACTOR * 2],
+                   "the step glides toward a bend due at frame 100 from the "
+                   "segment's start");
+                render_frames(got, n);
+                is_int(v->phase_step, v->phase_step_target,
+                       "...and starts the next segment on it (0x19444)");
+            }
+            if (c == 3)
+                ok(memcmp(got, none, sizeof none) == 0,
+                   "Expression is read at the segment end too: a CC11 dip "
+                   "inside one segment is never heard [A:0x19520]");
+        }
+        voice_pool_reset();
+        synth_construct();
+    }
+
+    tap_diag("--- A note is set up at Mix start, after the call's events are "
+             "queued: it reads a bend due at its own time even when the bend "
+             "comes after it in the file [A:0x12bd6],[A:0x16cac] ---");
+    if (!have_dls)
+        tap_skip("dist/gm.dls not loadable", "note setup reads same-time bend");
+    else
+    {
+        synth_construct();
+        voice_note_on(0, 60, 100);
+        synth_midi(0xE0, 0, 0);
+        Voice *v = vo_find(0, 60);
+        static int16_t buf[64 * RESAMPLE_FACTOR * 2];
+        render_frames(buf, 64 * RESAMPLE_FACTOR);
+        if (v)
+            voice_update_pitch(v);
+        ok(v && v->phase_pos == 64 * RESAMPLE_FACTOR * v->phase_step_target,
+           "a note-on followed by a same-time bend plays the bent pitch from "
+           "its first frame, no glide");
+        voice_pool_reset();
+        synth_construct();
+    }
+
+    tap_diag("--- An EG's first segment bound is its attack (0x198b6): a zero "
+             "attack primes the mixer at the note's own time, so the note "
+             "starts on EG2's full depth [A:0x19987] ---");
+    {
+        static int16_t z[1024];
+        static Wave w;
+        w.sample_rate = BASE_RATE;
+        w.samples = z;
+        w.sample_count = 1024;
+        Voice *v = &g_voices[0];
+        synth_construct();
+        vo_render_fixture(v, &w, 1024, 0);
+        v->base_ratio_q12 = 2048;
+        v->eg2_depth_cents = 1200.0;
+        v->eg2_atk = 0;
+        v->eg2_dec = 10000000;
+        v->eg2_sus = 0;
+        v->eg2_off = -1;
+        v->starting = 1;
+        static int16_t buf[64 * RESAMPLE_FACTOR * 2];
+        render_frames(buf, 64 * RESAMPLE_FACTOR);
+        is_int(v->phase_pos, 64 * RESAMPLE_FACTOR * 4096,
+               "EG2 +1200 c with no attack plays an octave up from the first "
+               "frame (step 2048 -> 4096), no glide");
+        voice_pool_reset();
+        synth_construct();
+    }
+
+    tap_diag("--- A note-off releases at its own time, not at the Mix start "
+             "[A:0x19a3d]-[A:0x19a6f] ---");
+    {
+        static Wave w;
+        static int16_t z[1];
+        w.sample_rate = BASE_RATE;
+        w.samples = z;
+        w.sample_count = 1;
+        static int16_t buf[1024 * RESAMPLE_FACTOR * 2];
+        Voice *v = &g_voices[0];
+        double lvl[2];
+        for (int c = 0; c < 2; c++)
+        {
+            synth_construct();
+            vo_render_fixture(v, &w, 1, 7);
+            v->note = 60;
+            v->held = 1;
+            v->loop_len_s = 1;
+            if (c == 0)
+            {
+                voice_set_event_offset(500 * RESAMPLE_FACTOR);
+                voice_note_off(7, 60);
+                voice_set_event_offset(0);
+                render_frames(buf, SERVICE_BLOCK_FRAMES);
+            }
+            else
+            {
+                render_frames(buf, 500 * RESAMPLE_FACTOR);
+                voice_note_off(7, 60);
+                render_frames(buf, 524 * RESAMPLE_FACTOR);
+            }
+            lvl[c] = v->env_level;
+        }
+        ok(lvl[0] < 1.0 && fabs(lvl[0] - lvl[1]) < 1e-12,
+           "EG1 at the call's end has released for 524 frames, whatever "
+           "frame the call started on");
+        voice_pool_reset();
+        synth_construct();
     }
 }
 

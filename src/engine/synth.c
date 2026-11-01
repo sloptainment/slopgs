@@ -70,6 +70,8 @@ static void channel_construct_only(Channel *c)
 
 /* Program Change locale nodes a service call has not folded yet (0x16b46),
  * with the program and locale from before the first of them. */
+static void ctl_clear(void);
+
 static uint8_t pc_pending[16];
 static uint8_t pc_program[16];
 static uint32_t pc_locale[16];
@@ -97,6 +99,7 @@ void synth_reset(void)
      * System Reset and GM System On both acquire the collection (0x13218,
      * 0x13700). */
     acquire_collection();
+    ctl_clear();
 }
 
 /* Device construction/open: power-on defaults + synth_reset() body; resets
@@ -138,6 +141,109 @@ int32_t synth_pitch_bend_cents(int ch)
     /* (raw*rangeCents)>>13, an arithmetic shift: floor, not truncation
      * (0x16d7c). `/` would differ by one cent on most downward bends. */
     return (int32_t)(((int64_t) raw * c->pb_range_cents) >> 13);
+}
+
+/* RecordMIDI queues each live controller with its event time (0x16bae);
+ * a voice reads the value due at its segment end (0x16c50) and Mix folds
+ * every node older than its end into the current value (0x16b46). Here the
+ * Channel fields hold the newest value and the queue what came before. */
+#define CTL_QUEUE 64
+
+static struct
+{
+    /* value before q[0]; n pending nodes in time order */
+    uint16_t cur;
+    uint8_t n;
+    struct
+    {
+        uint64_t t;
+        uint16_t v;
+    } q[CTL_QUEUE];
+} g_ctl[16][CTL_COUNT];
+
+static uint16_t ctl_live(const Channel *c, int k)
+{
+    switch (k)
+    {
+        case CTL_MOD:
+            return c->modulation;
+        case CTL_VOL:
+            return c->volume;
+        case CTL_PAN:
+            return c->pan;
+        case CTL_EXPR:
+            return c->expression;
+        default:
+            return c->pitch_bend;
+    }
+}
+
+static void ctl_clear(void)
+{
+    for (int ch = 0; ch < 16; ch++)
+        for (int k = 0; k < CTL_COUNT; k++)
+        {
+            g_ctl[ch][k].n = 0;
+            g_ctl[ch][k].cur = ctl_live(&g_channels[ch], k);
+        }
+}
+
+/* after each event: whatever it changed is queued at the event's time,
+ * however it was changed (CC, reset, SysEx) */
+static void ctl_record(void)
+{
+    uint64_t t = voice_event_time();
+    for (int ch = 0; ch < 16; ch++)
+        for (int k = 0; k < CTL_COUNT; k++)
+        {
+            uint16_t v = ctl_live(&g_channels[ch], k);
+            uint8_t n = g_ctl[ch][k].n;
+            if (v == (n ? g_ctl[ch][k].q[n - 1].v : g_ctl[ch][k].cur))
+                continue;
+            /* ponytail: a full queue folds its oldest node early; 64 is
+               ~16 events per channel per ms at the 1024-frame call */
+            if (n == CTL_QUEUE)
+            {
+                g_ctl[ch][k].cur = g_ctl[ch][k].q[0].v;
+                for (uint8_t j = 1; j < n; j++)
+                    g_ctl[ch][k].q[j - 1] = g_ctl[ch][k].q[j];
+                n--;
+            }
+            g_ctl[ch][k].q[n].t = t;
+            g_ctl[ch][k].q[n].v = v;
+            g_ctl[ch][k].n = n + 1;
+        }
+}
+
+void synth_ctl_fold(uint64_t end)
+{
+    for (int ch = 0; ch < 16; ch++)
+        for (int k = 0; k < CTL_COUNT; k++)
+        {
+            uint8_t n = g_ctl[ch][k].n, i = 0;
+            while (i < n && g_ctl[ch][k].q[i].t < end)
+                g_ctl[ch][k].cur = g_ctl[ch][k].q[i++].v;
+            for (uint8_t j = i; j < n; j++)
+                g_ctl[ch][k].q[j - i] = g_ctl[ch][k].q[j];
+            g_ctl[ch][k].n = n - i;
+        }
+}
+
+uint32_t synth_ctl_at(int ch, int k, uint64_t t)
+{
+    /* nothing pending: the live field, which unit fixtures also write */
+    if (!g_ctl[ch][k].n)
+        return ctl_live(&g_channels[ch], k);
+    for (int i = g_ctl[ch][k].n - 1; i >= 0; i--)
+        if (g_ctl[ch][k].q[i].t <= t)
+            return g_ctl[ch][k].q[i].v;
+    return g_ctl[ch][k].cur;
+}
+
+int32_t synth_pitch_bend_cents_at(int ch, uint64_t t)
+{
+    int32_t raw = (int32_t) synth_ctl_at(ch, CTL_BEND, t) - 8192;
+    return (int32_t) (((int64_t) raw * g_channels[ch].pb_range_cents) >> 13);
 }
 
 static void recompute_rpn1(Channel *c)
@@ -287,7 +393,7 @@ static void dispatch_cc(int ch, uint32_t cc, uint32_t val)
     }
 }
 
-void synth_midi(uint32_t status, uint32_t d1, uint32_t d2)
+static void midi(uint32_t status, uint32_t d1, uint32_t d2)
 {
     if (status == 0xFF)
     {
@@ -348,7 +454,7 @@ void synth_midi(uint32_t status, uint32_t d1, uint32_t d2)
     }
 }
 
-void synth_sysex(const uint8_t *buf, uint32_t len)
+static void sysex(const uint8_t *buf, uint32_t len)
 {
     if (len < 1)
         return;
@@ -444,4 +550,16 @@ void synth_sysex(const uint8_t *buf, uint32_t len)
         return;
     }
     /* any other manufacturer/model/command: unrecognized, dropped silently. */
+}
+
+void synth_midi(uint32_t status, uint32_t d1, uint32_t d2)
+{
+    midi(status, d1, d2);
+    ctl_record();
+}
+
+void synth_sysex(const uint8_t *buf, uint32_t len)
+{
+    sysex(buf, len);
+    ctl_record();
 }

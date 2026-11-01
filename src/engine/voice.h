@@ -14,17 +14,15 @@
 #endif
 #define RENDER_RATE (BASE_RATE * RESAMPLE_FACTOR)
 
-/* shared modulation cadence for render.c's LFO and voice.c's EG2 stepping */
-#define LFO_UPDATE_FRAMES (64 * RESAMPLE_FACTOR)
-
 /* one sample in phase units: Q12 scaled by RESAMPLE_FACTOR, so phase_step is
  * the BASE_RATE step and frame R*n lands on frame n's exact position */
 #define PHASE_ONE (4096u * RESAMPLE_FACTOR)
 
 #ifndef SERVICE_BLOCK_FRAMES
-/* audio service block: one clock for re-aim/gain ramp/reserve top-up, see
- * render.c's GAIN_SEGMENT_FRAMES */
-#define SERVICE_BLOCK_FRAMES (256u * RESAMPLE_FACTOR)
+/* one Mix call: FillBuffer allocates 0x1000 bytes and mixes 0x1000>>2
+ * frames into them (0x184c0, 0x181fa); smf.c drains each call's events at
+ * its top, and no segment runs past its end (0x196de) */
+#define SERVICE_BLOCK_FRAMES (1024u * RESAMPLE_FACTOR)
 #endif
 
 /* RESAMPLE_FACTOR must stay an INTEGER multiple of BASE_RATE: a non-integer
@@ -60,29 +58,13 @@ typedef struct Voice
     Artic *artic;
 
     uint32_t phase_pos; /* PHASE_ONE units: index * PHASE_ONE + fraction */
-    /* per-output-sample increment, PHASE_ONE units; ramped towards
-     * phase_step_target one sample at a time by render.c's render_voice, never
-     * written directly outside voice_note_on's snap and that ramp step
-     * (0x18fba) */
+    /* per-output-sample increment, PHASE_ONE units; moved toward
+     * phase_step_target in stairs by render_voice (0x18fba) */
     uint32_t phase_step;
-    /* bend the in-flight ramp is aimed at; LFO/EG2 changes are carried through
-     * instantly instead */
-    int32_t bend_cents_applied;
-    /* live target voice_update_pitch recomputes every block (bend/LFO/EG2);
-     * phase_step glides toward this, mirroring gain_l/gain_l_target */
+    /* the step as of the current segment's end (bend+LFO+EG2), set by
+     * voice_update_pitch */
     uint32_t phase_step_target;
-    /* HELD per-sample slope towards phase_step_target, in 1/256 phase_step LSBs
-     * (whole LSBs too coarse below ~a semitone); sized by ramp_reaim over a
-     * fixed horizon, held until ramp_left expires */
-    int32_t phase_step_ramp_step;
-    /* leftover 1/256ths from the slope above, carried sample to sample by
-     * render_voice */
-    int32_t phase_step_ramp_acc;
-    /* LFO/EG2 movement of the target not yet in phase_step: the mixer takes it
-     * up every stair_k frames of a segment (0x1a360), unless a bend ramp is
-     * running */
-    int32_t step_debt;
-    /* this block's summed pitch modulation (bend+LFO+EG2), cents */
+    /* the segment's summed pitch modulation (bend+LFO+EG2), cents */
     int32_t mod_cents;
     /* the previous segment's attenuation sums and pitch cents; they size
      * the stairs (0x19077) */
@@ -90,12 +72,6 @@ typedef struct Voice
     /* BASE_RATE frames between step refreshes this segment; frames left to the
      * next one; render frames into the segment, for the RESAMPLE_FACTOR grid */
     uint32_t stair_k, stair_left, stair_sub;
-    /* frames since ramp_reaim: the slope is per BASE_RATE frame, applied on
-     * every RESAMPLE_FACTOR-th frame */
-    uint32_t ramp_sub;
-    /* frames left on the current ramp; 0 = settled. voice_ramp_tick snaps
-     * phase_step to target on expiry */
-    uint32_t ramp_left;
     /* note-on base pitch ratio, clamped once at note-on (incl. latched
      * RPN1/RPN2); live bend/LFO multiply this OUTSIDE the clamp -- `[M: probe
      * 30]` */
@@ -109,6 +85,15 @@ typedef struct Voice
     /* frames before this voice produces anything, so a note-on lands on its
      * exact sample despite being dispatched at the buffer top */
     uint32_t start_delay;
+    /* set at note-on: the first render evaluates pitch and gain again at
+     * the note's time, once the whole call's events are queued (0x12bd6
+     * sets notes up at Mix start, after RecordMIDI) */
+    int starting;
+    /* g_now frame a dispatched note-off releases EG1/EG2 at; VOICE_NO_RELEASE
+     * if none is pending [A:0x19a3d]-[A:0x19a6f] */
+    uint64_t release_at;
+    /* ...and whether that release is a fast one (0x19aa4) */
+    int release_fast;
 
     /* gain in force for the CURRENT amplitude segment: gain_*_target sampled at
      * the segment boundary and held for its duration `[A:0x19490]` */
@@ -170,10 +155,10 @@ typedef struct Voice
     int64_t eg2_off;
     uint64_t eg2_t;
     int32_t eg2_cents;
-    /* EG2's share of the step still to land this segment, its stair increment
-     * and accumulator (Q8): the mixer adds (S1-S0)*K/N every K frames
+    /* the step's change still to land this segment, its stair increment and
+     * accumulator (Q8): the mixer adds (S1-S0)*K/N every K frames
      * [A:0x190c8, 0x1a41d] */
-    int32_t eg2_left, eg2_inc, eg2_acc;
+    int32_t step_left, step_inc, step_acc;
     /* connection scale; 0 = no EG2->pitch (the default) */
     double eg2_depth_cents;
 
@@ -192,7 +177,7 @@ typedef struct Voice
      * the same voice isn't re-marked mid-drain. Cleared at voice_note_on. */
     int fast_release_committed;
 
-    /* LFO clock: frames since note-on (0x1891e) */
+    /* LFO clock: frames since note-on at the evaluation time (0x1891e) */
     uint64_t lfo_elapsed;
 } Voice;
 
@@ -214,6 +199,9 @@ void voice_sustain_lift(int channel);
 double voice_step_envelope(Voice *v);
 
 void voice_set_event_offset(uint32_t frames);
+/* g_now plus the offset of the event being dispatched */
+uint64_t voice_event_time(void);
+#define VOICE_NO_RELEASE UINT64_MAX
 
 /* "no scheduled boundary" sentinel for voice_env_frames_to_change, below */
 #define ENV_NO_CHANGE 0xFFFFFFFFu
@@ -221,20 +209,18 @@ uint32_t voice_env_frames_to_change(const Voice *v);
 
 int voice_any_active(void);
 
-/* recomputes v->phase_step from v->base_cents plus every live pitch source
- * (bend, LFO, EG2) -- the ONLY place phase_step is computed */
+/* phase_step_target from v->base_cents plus every live pitch source (bend
+ * and CC1 as due at time t, LFO at lfo_elapsed, EG2) -- the ONLY place it is
+ * computed; voice_update_pitch reads the newest values */
+void voice_update_pitch_at(Voice *v, uint64_t t);
 void voice_update_pitch(Voice *v);
 
-void voices_update_modulation(void);
-
-/* retire pitch ramps whose horizon has elapsed; call once per rendered
- * sub-chunk, AFTER render_voice has actually rendered those frames */
-void voice_ramp_tick(uint32_t frames);
-void voices_advance_lfo(uint32_t frames);
-
-/* recomputes gain_l/gain_r from atten_const_hdb plus live master/CC7/CC11/CC10
- * -- the ONLY place gain is computed */
+/* gain_l/r_target and atten_l/r_hdb from atten_const_hdb plus master and
+ * CC7/CC11/CC10/CC1 as due at time t -- the ONLY place gain is computed */
+void voice_update_gain_at(Voice *v, uint64_t t);
 void voice_update_gain(Voice *v);
+/* the release a note-off scheduled, reached at EG2 frame eg2_t */
+void voice_release_due(Voice *v, uint64_t eg2_t);
 
 /* gain for a pre-clamp attenuation sum with EG1's level added in dB before
  * the ceiling clamp [A:0x18ff7]; env_hdb from voice_env_hdb */
@@ -254,5 +240,12 @@ void voice_eg2_segment(Voice *v, uint32_t frames);
 uint32_t voice_eg2_render_frames_to_change(const Voice *v);
 
 uint32_t voice_stair_frames(uint32_t seg, int32_t d_att, int32_t d_cents);
+
+/* RENDER_RATE frames rendered so far; render_frames advances it */
+extern uint64_t g_now;
+
+/* frames from the voice's clock (eg2_t) to its next segment end, before the
+ * Mix end clips it [A:0x196cd]-[A:0x196f0] */
+uint32_t voice_segment_frames(const Voice *v);
 
 #endif /* VOICE_H */

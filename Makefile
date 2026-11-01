@@ -39,10 +39,10 @@ CC_X86  ?= i686-w64-mingw32-gcc
 # 1 = drain MIDI at the service block boundary, as the driver does (the
 # default, see vsti.c); 0 = give note-ons their sub-block offset.
 VSTI_TIMING ?= 1
-# Gain-segment/service-block length for the plugin only. 512 frames (23.2 ms)
+# Service-block (Mix call) length for the plugin only. 512 frames (23.2 ms)
 # is what direct measurement of the reference captures shows; the engine's own
-# 256 is a corpus-sweep choice, and the corpus is scored through msgs-render,
-# not through a host. artifacts/INVESTIGATE.adoc#i-segment-length.
+# 1024 is the driver's (FillBuffer, 0x181fa), and the corpus is scored through
+# msgs-render, not through a host.
 VSTI_SEGMENT ?= 512
 CFLAGS_VSTI := -std=c11 -O2 -Wall -Wextra -Isrc \
                -DVSTI_IMPRECISE_TIMING=$(VSTI_TIMING) \

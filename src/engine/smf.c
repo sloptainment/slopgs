@@ -498,8 +498,17 @@ uint32_t smf_render(int16_t *out, uint32_t frames)
             }
             else
             {
-                render_frames(out + produced * 2, frames - produced);
-                produced = frames;
+                /* the tail too renders in Mix-sized calls on the block grid:
+                   a segment never runs past a call's end */
+                uint32_t tail = SERVICE_BLOCK_FRAMES -
+                                (g_sample_pos % SERVICE_BLOCK_FRAMES);
+                if (tail > frames - produced)
+                    tail = frames - produced;
+                render_frames(out + produced * 2, tail);
+                produced += tail;
+                g_sample_pos += tail;
+                if (produced < frames)
+                    continue;
                 if (!voice_any_active())
                     g_finished = 1;
                 break;
@@ -516,9 +525,10 @@ uint32_t smf_render(int16_t *out, uint32_t frames)
         if (chunk == 0)
             chunk = 1;
 
-        /* Drain-ahead: every event due in this block acts now; only a note-on
-         * uses its true sub-block offset; a USE RHYTHM PART cut lands at the
-         * block top, as the reference's is instantaneous (probe 48). */
+        /* Drain-ahead: every event due in this block is dispatched now with
+         * its sub-block offset; note-ons, note-offs and the live controllers
+         * act at that time, everything else (a USE RHYTHM PART cut, probe 48)
+         * at the block top. */
         while (g_event_index < g_event_count &&
                g_events[g_event_index].sample_time < g_sample_pos + chunk)
         {

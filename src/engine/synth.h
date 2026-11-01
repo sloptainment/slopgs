@@ -42,6 +42,22 @@ void synth_construct(void);
 uint32_t synth_channel_locale(int ch);
 int32_t synth_pitch_bend_cents(int ch);
 
+/* the live controllers a voice reads at its segment ends */
+enum
+{
+    CTL_MOD,
+    CTL_VOL,
+    CTL_PAN,
+    CTL_EXPR,
+    CTL_BEND,
+    CTL_COUNT
+};
+/* the controller's value at time t (RENDER_RATE frames) [A:0x16c50] */
+uint32_t synth_ctl_at(int ch, int ctl, uint64_t t);
+int32_t synth_pitch_bend_cents_at(int ch, uint64_t t);
+/* Mix's end: fold what is older than `end` into the current value */
+void synth_ctl_fold(uint64_t end);
+
 /* One short message with an explicit status byte; running-status expansion is
  * the caller's job. 0xFF is System Reset. */
 void synth_midi(uint32_t status, uint32_t d1, uint32_t d2);
