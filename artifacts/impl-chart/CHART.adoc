@@ -8,448 +8,279 @@
 This document describes the MIDI behavior of the `slopgs` MIDI implementation,
 an emulation of the Microsoft GS Wavetable Synth.
 
-Updates along with `src/unit.c`.
-
-
 [#s4]
 == Basic Specifications
 
-Number of Parts:: 16.
+Number of Parts:: 16
 Maximum Polyphony:: 54 voices (48 sustained under continuous overload)
-Effects:: None.
-Wavetable source:: A DLS-1 sample collection. (Depicted here is the standard `gm.dls`.)
-Output format:: 22050 Hz, stereo, 16-bit signed PCM.
+Effects:: None
+Wavetable source:: A DLS-1 sample collection, usually `gm.dls`
+Output format:: 22050 Hz, stereo, 16-bit signed PCM
 
 
 [#s1]
 == Receive data
 
-In every byte pattern below, `n` is the MIDI channel nibble (`0`–`F`,
-`0`=channel 1 … `F`=channel 16).
-
+`n` is the MIDI channel nibble: `0` is channel 1, `F` is channel 16.
 
 [#s1-1]
 === Channel Voice Message
 
-`8n kk vv` — Note off::
-Releases the note on its patch's own release curve, at the same rate in
-decibels per second no matter how far the note had already decayed — so a
-note released late fades out sooner, not more slowly.
-+
+`8n kk vv` — Note Off::
 * `kk` = note number (`00`–`7F`, 0–127)
-* `vv` = release velocity (`00`–`7F`) — **ignored**
-
-`9n kk vv` — Note on::
-* `kk` = note number (0–127)
-* `vv` = velocity (`01`–`7F`, 1–127) - fixed curve. Perceptually, amplitude scales with the square of velocity/127
+* `vv` = release velocity. **Ignored.**
 +
-Velocity is not only a volume control: on patches whose sample collection
-asks for it, a harder-struck note also *attacks* faster. In `gm.dls` 27 of
-the 235 instruments do. Note number behaves the same way for decay — see
-§<<quirks-envelopes>>. Every voice also has a hard loudness ceiling — see
-§<<quirks-ceiling>>.
+See <<ch-note-off>>.
 
-`An kk vv` — Polyphonic Key Pressure (aftertouch)::
-**Not recognized.** Received, no audible effect.
+`9n kk vv` — Note On::
+* `kk` = note number (`00`–`7F`, 0–127)
+* `vv` = velocity (`01`–`7F`, 1–127)
++
+See <<ch-note-on>>.
 
-`Bn cc vv` — Control Change::
-See §<<scc>>.
+`An kk vv` — Polyphonic Key Pressure:: **Ignored.**
+
+`Bn cc vv` — Control Change:: See <<scc>>.
 
 `Cn pp` — Program Change::
 * `pp` = program number (`00`–`7F`, 0–127)
 +
-Combines with whatever Bank Select value is currently in
-effect (§<<scc>>) to select an instrument.
+Selects the instrument from `pp` and the current Bank Select value (<<scc>>).
 
-`Dn vv` — Channel Pressure (aftertouch)::
-**Not recognized.** Received, no audible effect.
+`Dn vv` — Channel Pressure:: **Ignored.**
 
 `En ll mm` — Pitch Bend Change::
-* `ll` = LSB
-* `mm` = MSB
-* Combine to a 14-bit value `mm` × 128 + `ll`.
-* Center is `00 40` (8192, no bend)
-* Applied continuously to every sounding note on the channel — a bend
-arriving mid-note is heard *immediately*, not just on the next note. Range
-is set by RPN0, default ±2 semitones (§<<scc>>). This includes rhythm/drum
-Parts: bending a drum channel bends its sounding notes too, using that
-channel's RPN0 range the same as any other Part.
+* `ll` = LSB, `mm` = MSB
+* Value = `mm` × 128 + `ll` (14-bit, 0–16383)
+* Center = `00 40` (8192)
++
+RPN 0 sets the range (<<scc>>). See <<ch-bend>>.
 
 [#scc]
 === Control Change
 
-Only the controllers below are recognized. **Every other CC number
- is received and produces no effect, silently — never an error.**
+The synthesizer recognizes only the controllers below. It ignores all other
+controller numbers. For the default values, see <<reset-table>>.
 
 `Bn 00 mm` — Bank Select MSB::
-See Bank Select LSB.
-
 `Bn 20 ll` — Bank Select LSB::
-**GS Mode only**: Takes effect on the *next Program Change*, never
-on notes already sounding.
+Sets the bank for the next Program Change. Notes that already sound do not
+change.
++
+**GS mode only.** When GS mode (<<roland-sysex>>) is off, the synthesizer ignores these messages
+and does not keep the value.
 
-[WARNING]
---
-GS Mode CCs are **dropped outright** if GS mode is off — the value is not
-stored, not queued, not remembered.
-
-GS mode is entered only by a GS Reset System Exclusive
-(§<<s1-4>>), and is left again by GM System On, GM System Off
-or System Reset (`FF`)
---
-
-`Bn 01 vv` — Modulation Wheel:: Recognized.
+`Bn 01 vv` — Modulation:: Recognized. See <<ch-mod>>.
 
 `Bn 06 mm` — Data Entry MSB::
-See Data Entry LSB.
-
 `Bn 26 ll` — Data Entry LSB::
-Recognized only together with RPN 0/1/2 selection, below; meaningless on
-their own.
+Sets the value of the selected RPN (see RPN, below). If RPN 0, 1 or 2 is not
+selected, these messages have no effect.
 
-`Bn 07 vv` — Channel Volume:: Recognized. Default `64` (100).
+`Bn 07 vv` — Channel Volume:: Recognized.
 
-`Bn 0A vv` — Pan:: Recognized. Default `40` (64, center).
-+
-The law is constant-power: each channel is attenuated by
-`10·log10(position)`, so a centered note sits about 3 dB down on both sides
-rather than at full scale, and hard pan leaves the far channel 25 dB down
-rather than silent.
-+
-How much of the sweep is audible depends on how loud the part is. Each
-channel has a fixed output ceiling; a part running near it has both channels
-pinned there through the middle of the sweep, so pan does nothing until the
-far channel drops below the ceiling — the plateau is wide at high Channel
-Volume and Expression, and narrows as the part gets quieter. At low levels
-the sweep is smooth from end to end. Whichever side you pan toward never
-gets louder than it already was.
+`Bn 0A vv` — Pan::
+Recognized. `00` = left, `40` (64) = center, `7F` = right. See <<ch-pan>>.
 
-`Bn 0B vv` — Expression:: Recognized. Default `7F` (127).
+`Bn 0B vv` — Expression:: Recognized.
 
 `Bn 40 vv` — Hold 1 (Sustain)::
-Recognized.
-* `00` = off (pedal up) — default
-* `01`–`7F` = on (pedal down). *Any non-zero value*, not just `40`.
+* `00` = off (pedal up)
+* `01`–`7F` = on (pedal down)
 
-`Bn 5B vv` — Effects 1 Depth (Reverb Send)::
-**Not recognized.** Received w/o effect.
+`Bn 5B vv` — Effects 1 Depth (Reverb Send):: **Ignored.**
 
-`Bn 5D vv` — Effects 3 Depth (Chorus Send)::
-**Not recognized.** Received w/o effect.
+`Bn 5D vv` — Effects 3 Depth (Chorus Send):: **Ignored.**
 
 `Bn 62 ll` — NRPN LSB::
-See NRPN MSB.
-
 `Bn 63 mm` — NRPN MSB::
-Recognized only as "deselect the current RPN". **No NRPN parameter is ever addressable** — Data Entry sent after an NRPN
-selection has no effect.
-+
-Sending either, with any value, immediately clears whatever RPN was previously selected to Null.
-
+Deselects the current RPN. These messages do not select a parameter.
 
 `Bn 64 ll` — RPN LSB::
-See RPN MSB.
-
 `Bn 65 mm` — RPN MSB::
-Selects a Registered Parameter for the following Data Entry (CC6/CC38)
-messages to target:
+Select the parameter that Data Entry (CC6/CC38) sets:
 +
-[options="header",cols="1,2a,2a"]
+[options="header",cols="1,2,2,2"]
 |===
-| RPN (MSB,LSB) | Parameter | Applied
+| RPN (MSB LSB) | Parameter | Data Entry | Applied
 | `00 00`
-| *Pitch Bend Sensitivity*.
+| Pitch Bend Sensitivity
+| MSB = semitones. Default 2.
 
-*Data MSB only*: +
-Semitones (default=2).
-
-*Not range-checked* — any MSB `00`–`7F` is accepted. Bends are still
-capped at ±48 semitones.
-
-LSB ignored.
-
-| Live — read continuously, alongside Pitch Bend itself.
+LSB is ignored.
+| Immediately, also to sounding notes.
 | `01 00`
-| *Channel Fine Tuning*
-
-14-bit Data Entry: +
-−100 … +99 cents.
-| **Latched at Note On.** Changing it while a note is held does not retune that note.
+| Fine Tuning
+| MSB and LSB: −100 … +99 cents.
+| At the next Note On.
 | `02 00`
-| *Channel Coarse Tuning*
+| Coarse Tuning
+| MSB: −64 … +63 semitones.
 
-*Data MSB only*: +
-−64 … +63 semitones.
-
-LSB ignored.
-| **Latched at Note On**, same as Fine Tuning. Has **no effect on a rhythm
-(drum) Part** — the value is stored, but drum Parts ignore it.
+LSB is ignored.
+| At the next Note On. Melodic Parts only.
 | `7F 7F`
-| *Null* (no parameter selected).
+| Null (no parameter)
+| No effect.
 | —
-| Others
-| *Any*
-| Stored, but *no effect*
+| Other
+| —
+| Stored. No effect.
+| —
 |===
-
 
 `Bn 78 00` — All Sound Off::
-Recognized. Releases (does not hard-cut) every sounding note on the
-channel, **bypassing** a held sustain pedal.
+Releases all sounding notes on the channel, also the notes that the pedal
+holds.
 
 `Bn 79 vv` — Reset All Controllers::
-Recognized. Bank/Program and the RPN/NRPN selection are left untouched.
-Expression, Pitch Bend, Modulation and the sustain pedal always re-arm;
-Channel Volume and Pan only re-arm if the value byte `vv` is **non-zero**:
-+
-[options="header",cols="2,4"]
-|===
-|Parameter
-|Value
-|Channel Volume|100 — only if `vv` is non-zero
-|Pan|64 (center) — only if `vv` is non-zero
-|Expression|127
-|Pitch Bend|8192 (center)
-|Modulation|0
-|Sustain pedal|Released
-|===
-+
-Nearly every MIDI source sends this message as `Bn 79 00` — a value byte of
-`0` is the convention for this controller. For that message, Channel Volume
-and Pan are left exactly as they already were; only Expression, Pitch Bend,
-Modulation and the sustain pedal actually reset.
+Resets Expression, Pitch Bend, Modulation and the sustain pedal. If `vv` is
+not `00`, it also resets Channel Volume and Pan. See <<ch-reset>>.
 
-[WARNING]
---
-Reset All Controllers (CC121), GS Reset, GM System On/Off and System Reset
-(`FF`) *DO NOT reset* Pitch Bend Sensitivity (RPN0), nor which RPN is
-currently selected — both survive every reset path.
-
-Fine Tuning (RPN1) and Coarse Tuning (RPN2) are **not** in that exception:
-CC121 leaves them alone, but GS Reset, GM System On/Off and System Reset
-(`FF`) all zero them.
---
-
-`Bn 7A 00` — Local Control::
-**Not applicable.** Received, no effect.
+`Bn 7A 00` — Local Control:: **Ignored.**
 
 `Bn 7B 00` — All Notes Off::
-Recognized. Releases every sounding note on the channel, **honoring** a
-held sustain pedal (notes under a held pedal stay held).
+Releases all sounding notes on the channel. Notes that the pedal holds
+continue until the pedal is up.
 
-`Bn 7C 00` — Omni Mode Off::
-See Omni Mode On.
+`Bn 7C 00` — Omni Off::
+`Bn 7D 00` — Omni On::
+**Ignored** (<<s1-2>>).
 
-`Bn 7D 00` — Omni Mode On::
-**Not recognized.** Received, no mode change (§<<s1-2>>).
-
-`Bn 7E mm` — Mono Mode On (Poly Off)::
-Recognized. Switches the channel to mono and **releases** every
-currently-sounding note on it (implicit all-notes-off, per the MIDI spec),
-bypassing a held sustain pedal exactly as All Sound Off does.
+`Bn 7E mm` — Mono On::
+Sets the channel to mono. Releases all sounding notes on the channel, also
+the notes that the pedal holds. `mm` is ignored.
 +
-While a channel is mono, each new Note On first releases every note still
-held on that channel, again ignoring the sustain pedal. Notes do not glide.
-+
-`mm` (requested mono voice count) is **ignored** — the value sent changes
-nothing.
+In mono, each Note On first releases all notes on the channel, also the notes
+that the pedal holds. Notes do not glide.
 
-`Bn 7F 00` — Poly Mode On::
-Recognized. Switches the channel to poly and **releases** every
-currently-sounding note on it (implicit all-notes-off), bypassing a held
-sustain pedal.
+`Bn 7F 00` — Poly On::
+Sets the channel to poly. Releases all sounding notes on the channel, also
+the notes that the pedal holds.
 
 [#s1-2]
 === Channel Mode Message
 
-Mode is only ever *Omni Off* (each channel answers exactly the Part(s)
-mapped to it — see Basic Channel in the chart, §<<s3>>). Omni On/Off
-messages are received but never change this.
+The synthesizer always operates in *Omni Off*. It ignores Omni On and Omni Off.
 
-Mono/Poly are switchable
-per-channel via CC126/CC127 (§<<scc>>); a channel is
-otherwise Poly by default.
+CC126 and CC127 set Mono or Poly for each channel. The default is *Poly*.
 
 [#s1-3]
 === System Common Message
 
-Song Position Pointer, Song Select and Tune Request: **not recognized.**
-`slopgs` renders a Standard MIDI File on its own clock and has no use for
-sequencer-sync messages.
+**Ignored**: Song Position Pointer, Song Select, Tune Request.
+
+`slopgs` plays a Standard MIDI File on its own clock. It does not use sync
+messages.
 
 [#s1-4-rt]
 === System Real Time Message
 
-`F8` Timing Clock, `FA` Start, `FB` Continue, `FC` Stop::
-**Not recognized.**
+`F8` Timing Clock, `FA` Start, `FB` Continue, `FC` Stop:: **Ignored.**
 
-`FE` Active Sensing::
-**Not recognized.** Received, no effect.
+`FE` Active Sensing:: **Ignored.**
 
-`FF` Reset::
-Recognized. Restores the power-on defaults below. Note that it does *not*
-restore everything — see the warning after the table.
-+
-[options="header",cols="2,4"]
-|===
-|Parameter
-|Value
-|Bank/Program|0 / 0 / 0
-|Channel Volume|100
-|Pan|64 (center)
-|Expression|127
-|Pitch Bend|8192 (center)
-|Modulation|0
-|Sustain pedal|Released
-|Mono/Poly|Poly
-|Fine / Coarse Tuning (RPN1 / RPN2)|0 / 0
-|Data Entry|0
-|Master Volume|Unity
-|Per-Part tuning grid|Flat (0)
-|Part→channel map|Back to default (see §<<s3-1>>)
-|Rhythm parts|Part `0` only
-|GS mode|Cleared (Bank Select inert until the next GS Reset)
-|===
-
-[WARNING]
---
-The currently-selected *RPN/NRPN parameter* and the **Pitch Bend Sensitivity
-(RPN0)** value survive a Reset unchanged.
-
-*Fine/Coarse Tuning (RPN1/RPN2)* do not — a Reset zeroes both.
---
+`FF` System Reset::
+Sets the values in <<reset-table>>. Some values do not reset. See
+<<ch-reset>>.
 
 [#s1-4]
 === System Exclusive Message
 
-Four SysEx envelopes are recognized. The first is Roland's `DT1` ("Data set
-1"), which carries one parameter address per message and is expanded in
-§<<rolandsysex>> below; the other three are the standard
-Universal messages.
+The synthesizer recognizes the four messages below. It does not check the
+device ID (`dev`). It ignores all other System Exclusive messages.
 
 [cols="1,2a"]
 |===
-| `F0 41 dev 42 12 aa bb cc dd`...`dd sum F7`
-|
-Roland GS-family message.
+| `F0 41 dev 42 12 aa bb cc dd`…`dd sum F7`
+| Roland GS message (DT1).
 
-* `dev` = device ID — **not checked**
-* `aa bb cc` = 21-bit parameter address.
-* `dd...dd` = data bytes for that address.
-* `sum` = checksum — **not checked**
+* `aa bb cc` = address (<<roland-sysex>>)
+* `dd`…`dd` = data
+* `sum` = checksum. **Not checked.**
 | `F0 7E dev 09 01 F7`
-| GM System On (Universal Non-Realtime).
+| GM System On.
 
-Full device reset, and **clears GS mode** — Bank Select goes inert again
-until the next GS Reset. Also (re)loads the instrument set, so this is what
-restores sound after a GM System Off. `dev` not checked.
+Resets the device and clears GS mode. Loads the instrument set.
 | `F0 7E dev 09 02 F7`
-| GM System Off (Universal Non-Realtime).
+| GM System Off.
 
-Full device reset, and **clears GS mode** — exactly as GM System On does. It
-also **unloads the instrument set**: every patch becomes unavailable, so
-nothing sounds at all — not even a fresh Program Change — until a GM System
-On or a System Reset (`FF`) reloads it. `dev` not checked.
+Resets the device and clears GS mode. **Unloads the instrument set**: no note
+sounds until GM System On or System Reset.
 | `F0 7F dev 04 01 ll mm F7`
-| Master Volume (Universal Realtime).
+| Master Volume.
 
-`dev` not checked. **Only `mm` (MSB) is used; `ll` (LSB) is never read.**
+Uses `mm` only. `ll` is ignored.
 |===
 
-[#rolandsysex]
+[#roland-sysex]
 ==== Roland Messages
 
-The addresses listed below are DT1 addresses, to be filled in the
-`aa bb cc` part of the Roland GS-family message above.
+Put these addresses in `aa bb cc` of the Roland GS message.
+
+NOTE: When GS mode is off, the synthesizer ignores all addresses except GS
+Reset (`40 00 7F`).
 
 [options="header",cols="2,3,3a"]
 |===
 | Address | Parameter | Effect
 | `40 00 7F`
 | GS Reset
-| Full device reset, **and** sets GS mode.
+| Resets the device and sets GS mode.
 | `40 1n 02`
-| RCV CHANNEL (GS Mode)
-| Remaps which incoming channel Part `n` listens to. Persists until a Reset.
-Values count from 1: `01`–`10` select MIDI channels 1–16, one higher than
-Roland's own numbering; `00` is ignored.
+| RCV CHANNEL
+| Sets the MIDI channel that Part `n` receives. `01`–`10` = channel 1–16.
+`00` is ignored. Stays until the next reset.
 | `40 1n 15`
-| USE RHYTHM PART (GS Mode)
-| Nonzero = Part `n` switches to drum-kit ("rhythm") mode.
+| USE RHYTHM PART
+| `00` = melodic Part. Other values = rhythm (drum) Part.
 
-**Also fires a Reset All Controllers on every channel** — all notes cut,
-controllers back to defaults. Bank/Program survive.
+Also resets all channels. See <<ch-reset>>.
 | `40 1n 40`
 | Scale Tuning
-
-One signed offset per semitone class (C…B), centred on `40`, stored per Part `n`
-| Recognized, and it retunes the Part: each of the twelve values shifts every
-note of that semitone class (C, C♯, D, …) by the received value minus `40`
-cents (`40` = no change, roughly −64…+63 cents), drum Parts included.
-**Latched at Note On**, exactly like Fine Tuning — a note already sounding
-keeps its pitch. The twelve data bytes always start at semitone class C. A
-message cut short by `F7` stops one value early: the value just before the
-`F7` is not stored, and the earlier ones are kept. No other address in
-`41`–`4B` is recognized.
-| `40 1n` _any other_
-| Anything else in Roland's Patch-parameter address space for Part `n` (Reverb/Chorus Macro, Part Level, Pan, Pitch Key Shift, Velocity Sense, …)
-| **Not individually implemented.**
+| 12 values for Part `n`, C to B. `40` = no change. See <<ch-scale>>.
+| `40 1n` _other_
+| Other Part parameters
+| **Ignored.**
 |===
 
-NOTE: Only `40 00 7F` (GS Reset) works from a cold start. Everything else is *ignored unless GS Mode is activated via said Reset.*
+The synthesizer ignores all other addresses. Examples:
 
-**Not recognized**:
+* System Parameters (`40 00 00`–`06`: Master Tune, Master Volume, Master
+Key-Shift, Master Pan)
+* Drum Setup Parameters (`41 xx xx`)
+* Bulk Dump (`48 xx xx`, `49 xx xx`)
+* Display Data (model ID `45`, `10 00 xx`)
 
-* System Parameters (Master Tune, Master
-Volume-via-`DT1`, Master Key-Shift, Master Pan — address family `40 00
-00`–`06`)
-* Display Data (address family `10 00 xx`, Model ID `45`)
-* Drum Setup Parameters (address family `41 xx xx` — per-drum-instrument
-key/level/pan/reverb/chorus edits)
-* Bulk Dump (address families `48
-xx xx`/`49 xx xx`)
-
-Any `DT1` (or `RQ1`)
-message with an address outside the table above, or with a manufacturer
-ID other than `41`/`7E`/`7F`, is accepted and silently dropped.
-
-Fallthrough `40 1n xx` messages ("not individually implemented") are simply
-dropped, exactly like any other unrecognized address — they do **not**
-fall through into the Scale Tuning write. *A sequence intended to set,
-e.g., Reverb Macro or Part Level on real GS hardware does nothing here;
-it does not touch that Part's Scale Tuning table.*
+It also ignores RQ1 (data request) messages.
 
 [#s3]
 == MIDI Implementation Chart
 
-Basic Channel:: The MIDI channel each of the 16 Parts answers to. Parts are
-numbered `0`–`15`, matching the `n` in the `40 1n xx` System Exclusive
-addresses (§<<s1-4>>).
+Basic Channel:: The MIDI channel that each of the 16 Parts receives. Parts
+are numbered `0`–`15`, as the `n` in the `40 1n xx` addresses (<<s1-4>>).
 
-Mode:: Refers to the MIDI Mode messages (Omni On/Off, Mono/Poly).
-`slopgs` always behaves as Omni Off; only the Mono/Poly half of Mode is
-switchable, per channel.
+Mode:: The MIDI Mode messages (Omni On/Off, Mono/Poly). `slopgs` always
+operates in Omni Off. You can set Mono or Poly for each channel.
 
-Note Number / True Voice:: The range of note numbers accepted, and the
-range actually reproduced. Note number 60 is middle C.
+Note Number / True Voice:: The note numbers that the synthesizer accepts, and
+the note numbers that it plays. Note 60 is middle C.
 
-Velocity:: Whether Note On and Note Off messages' velocity byte affects
-anything.
+Velocity:: If the velocity of Note On and Note Off has an effect.
 
-After Touch:: `Key's` = polyphonic (per-note) aftertouch, `Ch's` = channel
-(monophonic) aftertouch.
+After Touch:: `Key's` = polyphonic (per-note) aftertouch. `Ch's` = channel
+aftertouch.
 
-Control Change:: See §<<scc>> for the full per-controller
-list — this row just points there.
+Control Change:: See <<s3-2>> and <<scc>>.
 
-Program Change:: The program numbers a Program Change message can select
-(raw message value — one less than the corresponding instrument number as
-usually printed on an instrument list).
+Program Change:: The program numbers that a Program Change can select. This
+is the message value: one less than the instrument number on most instrument
+lists.
 
-System Exclusive:: See §<<s1-4>> for the full address table.
+System Exclusive:: See <<s1-4>>.
 
-System Common, System Real Time:: Sequencer/drum-machine sync messages.
-Not used, except Reset (`FF`).
+System Common, System Real Time:: Sync messages. Not used, except System
+Reset (`FF`).
 
 [#s3-1]
 === Implementation Chart
@@ -460,66 +291,66 @@ Not used, except Reset (`FF`).
 
 | Basic Channel +
 Default
-| ×
+| X
 | 1 – 16
-| Not an identity map. See the default parts mapping (§<<defmap>>) below.
+| Not channel = Part. See <<defmap>>.
 
 | Basic Channel +
 Changed
-| ×
+| X
 | 1 – 16, each
-| Via GS RCV CHANNEL — which is itself inert until a GS Reset.
+| With RCV CHANNEL. GS mode only.
 
 | Mode +
 Default
-| ×
+| X
 | Mode 3
 | Omni Off, Poly.
 
 | Mode +
 Messages
-| ×
+| X
 | Mono, Poly (CC126/127)
 | Omni On/Off received, no effect.
 
 | Mode +
 Altered
-| ×
+| X
 | Mode 3, 4
 |
 
 | Note Number
-| ×
+| X
 | 0 – 127
-| Depends on the loaded `gm.dls`.
+| Depends on the sample collection.
 
 | True Voice
-| ×
+| X
 | 0 – 127
-| Depends on the loaded `gm.dls`.
+| Depends on the sample collection.
 
 | Pitch Bender
-| ×
+| X
 | O
-| 14-bit, continuous.
+| 14-bit.
 
 | Control Change
-| ×
+| X
 | see below
-| Its own table, directly below this one.
+| See <<s3-2>>.
 
 | Prog Change
-| ×
+| X
 | O
 |
 
 | True #
-| ×
+| X
 | 0 – 127
 |
 
 | System Exclusive
-| ×
+| X
 | O
 a|
 
@@ -532,59 +363,59 @@ a|
 * *Device ID and checksum unchecked*
 
 | System Common
-| ×
-| ×
+| X
+| X
 |
 
 | System Real Time
-| ×
-| ×
+| X
+| X
 | Except Reset — see Aux Messages, below.
 
 4+^| *Aux Messages*
 
 | Local ON/OFF
-| ×
-| ×
+| X
+| X
 |
 
 | All Notes OFF
-| ×
+| X
 | O (CC123)
 |
 
 | Active Sense
-| ×
-| ×
+| X
+| X
 |
 
 | Reset
-| ×
+| X
 | O (`FF`)
 |
 
 4+^| *Velocity*
 
 | Note ON
-| ×
+| X
 | O
 |
 
 | Note OFF
-| ×
-| ×
+| X
+| X
 |
 
 4+^| *After Touch*
 
 | Key's
-| ×
-| ×
+| X
+| X
 |
 
 | Ch's
-| ×
-| ×
+| X
+| X
 |
 
 |===
@@ -598,122 +429,122 @@ a|
 
 | Bank Select +
 0 / 32
-| ×
+| X
 | cond.
 | No effect until a GS Reset has been received.
 
 | Mod Wheel +
 1
-| ×
+| X
 | O
 |
 
 | Data Entry +
 6 / 38
-| ×
+| X
 | O
 | Only meaningful with RPN, below.
 
 | Channel Volume +
 7
-| ×
+| X
 | O
 | Default 100.
 
 | Pan +
 10
-| ×
+| X
 | O
 | Default 64 (center).
 
 | Expression +
 11
-| ×
+| X
 | O
 | Default 127.
 
 | Hold 1 +
 64
-| ×
+| X
 | O
 |
 
 | Reverb Send +
 91
-| ×
-| ×
+| X
+| X
 | No reverb processor exists.
 
 | Chorus Send +
 93
-| ×
-| ×
+| X
+| X
 | No chorus processor exists.
 
 | NRPN +
 98 / 99
-| ×
+| X
 | cond.
 | Only deselects the current RPN; no NRPN parameter is ever addressable.
 
 | RPN +
 100 / 101
-| ×
+| X
 | O
 | Pitch Bend Sensitivity / Fine Tune / Coarse Tune only.
 
 | All Sound Off +
 120
-| ×
+| X
 | O
 | Bypasses a held sustain pedal.
 
 | Reset All Ctrl +
 121
-| ×
+| X
 | O
 | Bank/Program and RPN selection untouched.
 
 | Local Control +
 122
-| ×
-| ×
+| X
+| X
 | No local keyboard to disconnect.
 
 | All Notes Off +
 123
-| ×
+| X
 | O
 | Honors a held sustain pedal.
 
 | Omni Off +
 124
-| ×
-| ×
+| X
+| X
 |
 
 | Omni On +
 125
-| ×
-| ×
+| X
+| X
 |
 
 | Mono On +
 126
-| ×
+| X
 | O
-| Also releases the channel (implicit all-notes-off, bypasses the pedal).
+| Releases all notes, also the notes that the pedal holds.
 
 | Poly On +
 127
-| ×
+| X
 | O
-| Also releases the channel (implicit all-notes-off, bypasses the pedal).
+| Releases all notes, also the notes that the pedal holds.
 
 | Other +
 —
-| ×
-| ×
+| X
+| X
 | No effect, no error.
 
 |===
@@ -721,7 +552,7 @@ a|
 [NOTE]
 --
 * `O` : recognized/handled.
-* `×` : received (or n/a) with no effect.
+* `X` : received (or n/a) with no effect.
 * `cond.` : recognized, but only under a stated condition — see Remarks.
 
 Mode 1: Omni On, Poly. +
@@ -732,7 +563,7 @@ Mode 4: Omni Off, Mono.
 
 [#defmap]
 === Default Parts Mapping
-On boot, the parts-channels mapping are set as follows:
+At power-on, the Parts receive these channels:
 
 [options="header",cols="1,1,2"]
 |===
@@ -757,42 +588,184 @@ On boot, the parts-channels mapping are set as follows:
 |15|16|Melodic
 |===
 
-These mappings can be changed via the Roland SysEx RCV CHANNEL and USE RHYTHM PART messages (§<<rolandsysex>>).
+RCV CHANNEL and USE RHYTHM PART (<<roland-sysex>>) change this map.
 
-== Miscellaneous Quirks
+[#reset-table]
+=== Default Parameters
 
+[options="header",cols="2,4"]
+|===
+|Parameter
+|Value
+|Bank Select|0 / 0
+|Channel Volume|100
+|Pan|64 (center)
+|Expression|127
+|Pitch Bend|8192 (center)
+|Modulation|0
+|Sustain pedal|Released
+|Mono/Poly|Poly
+|Fine / Coarse Tuning (RPN1 / RPN2)|0 / 0
+|Data Entry|0
+|Master Volume|Unity
+|Per-Part tuning grid|Flat (0)
+|Part→channel map|Default (<<defmap>>)
+|Rhythm parts|Part `0` only
+|GS mode|Cleared (Bank Select inert until the next GS Reset)
+|===
+
+[#ch]
+== Synthesizer Characteristics
+
+[#ch-polyphony]
 === Polyphony
 
-An automatic accelerated-release policy engages from the **49th simultaneous
-voice** — not at 54 — freeing voices faster than a plain steal-oldest policy
-would.
+The synthesizer has 54 voices. From the 49th voice, *it releases old voices
+faster than a steal-oldest policy does*.
 
-Striking a key that is still sounding on the same channel, held or already
-releasing, cuts the earlier note the same way — except on the patches the
-sample collection marks as allowed to overlap themselves, where both ring.
+A new note on a key that still sounds on the same channel *cuts the earlier
+note*. This also occurs when the earlier note is in its release.
 
-A voice cut this way, or cut by a drum kit's exclusive-key group,
-reaches silence within 14.29 ms of the cut however long its patch's own
-release is; it fades, never clicks off.
+The sample collection may let patches overlap. If so, both notes sound anyway.
 
-[#quirks-envelopes]
+A voice that is cut this way, or by an exclusive group in a drum kit, fades
+to silence in ~15ms or less. It does not click.
+
+[#ch-envelopes]
 === Envelopes
 
-Amplitude fades at a constant rate in decibels, so a note fades
-at the same slope whatever level it is released from, and a patch's authored
-decay and release times mean "the time to fall 96 dB". Both are also
-*scaled per note* by the sample collection: higher notes decay faster, and on
-some patches harder-struck notes attack faster.
+Levels fade at a *constant rate* in decibels.
 
-[#quirks-ceiling]
+The sample collection can *scale these times for each note*. Higher notes can
+decay faster. On some patches, harder notes attack faster.
+
+
+[#ch-note-on]
+=== Note On
+
+Velocity behavior::
+Velocity uses a fixed curve: amplitude follows the square of velocity/127.
++
+Velocity may also change the attack (e.g. a harder note attacks
+faster), if the sample collection specifies the patch this way.
+
+CC behavior::
+In one instant, the synthesizer first collects all the Pitch Bend, Volume,
+Expression, Pan and Modulation values. It then starts up the note with
+the values on or before the Note On.
++
+If in the same instant those values change after the Note On, the note will
+glide to those new values.
+
+[#ch-note-off]
+=== Note Off
+
+A released note fades at the rate of its patch's release, which does not change with the level at release. Therefore a note that
+is released at a lower level becomes silent sooner.
+
+The synthesizer does not make short releases longer: a 10 ms release stops in
+10 ms.
+
+The fade can start up to approximately 25 ms before the Note Off (see
+<<ch-timing>>).
+
+[#ch-bend]
+=== Pitch Bend
+
+Pitch Bend changes all sounding notes on the channel. This includes rhythm
+(drum) Parts, with the RPN 0 range of their channel.
+
+RPN 0 accepts all values (`00`–`7F`). The bend itself stops at ±48
+semitones.
+
+[#ch-timing]
+=== Controller timing
+
+Pitch Bend, Modulation, Channel Volume, Pan and Expression do not change in
+one step. Each change glides to the new value in approximately 25 ms or less
+(with `gm.dls`). The glide can start a short time before the message.
+
+If a change and its reverse both occur in this time, you do not hear the
+change. Thus very fast Volume or Expression gates become soft. They never cut
+to silence.
+
+[#ch-mod]
+=== Modulation
+
+Modulation adds vibrato. Where the sample collection sets it, Modulation also
+adds tremolo (a change in loudness). The sample collection sets the depth.
+
+Some patches have vibrato or tremolo when Modulation is `00`. In `gm.dls`,
+examples are Tremolo Str, Vibraphone, Shakuhachi, Flute and Contrabass.
+
+Each patch sets its own rate and delay. If a patch does not set them, the
+rate is 5 Hz and there is no delay.
+
+[#ch-pan]
+=== Pan
+
+The pan law is constant power: each side is attenuated by
+`10·log10(position)`. At center, each side is approximately 3 dB down. At
+hard pan, the far side is approximately 25 dB down. It is not silent.
+
+Each side has a maximum level (<<ch-ceiling>>). A loud Part can be at this
+maximum on both sides near center. Then Pan has no effect until the far side
+falls below the maximum. This range is wide at high Channel Volume and
+Expression, and narrow at low levels. At low levels, the full sweep is
+smooth. Near the maximum, the side that you pan toward does not become
+louder.
+
+[#ch-ceiling]
 === Loudness ceiling
 
-Every voice has a hard output ceiling, reached before velocity, Channel
-Volume and Expression all read their maximum. The loudest span of the
-velocity/volume range — how wide it is depends on the patch's own authored
-sensitivity — collapses to a single level: past the ceiling, a harder hit no
-longer plays louder, even though it may still play differently (a faster
-attack, a different sample layer, and so on).
+Each voice has a maximum output level. A voice can reach it before velocity,
+Channel Volume and Expression are all at maximum. Above this level, a harder
+note is not louder. It can still have a different attack or sample layer.
+The patch's velocity sensitivity sets how wide this range is.
+
+The ceiling also applies to the envelope. A note above the ceiling stays at
+full level until its envelope falls by the amount above the ceiling. Thus a
+loud note gets to full level sooner and starts to decay later. It sounds
+longer than a soft note.
+
+[#ch-reset]
+=== Reset behavior
+
+No reset changes:
+
+* Pitch Bend Sensitivity (RPN 0)
+* The selected RPN
+
+Reset All Controllers (CC121) does not change Bank, Program, Fine Tuning
+(RPN 1) or Coarse Tuning (RPN 2).
+
+GS Reset, GM System On, GM System Off and
+System Reset set Fine Tuning and Coarse Tuning to 0.
+
+System Reset (`FF`) does not change the instrument of each Part. Only GS
+Reset and GM System On/Off set all Parts to program 0.
+
+*Exception:* System
+Reset can discard a Program Change from up to approximately 46 ms before it.
+
+USE RHYTHM PART (<<roland-sysex>>) stops all notes on all channels
+immediately. It also resets Channel Volume, Pan, Expression, Pitch Bend and
+Modulation on all channels. Bank and Program do not change.
+
+[#ch-scale]
+=== Scale Tuning
+
+Each of the 12 values tunes one note name (C, C♯, D … B) by the value minus
+`40`, in cents: `00` = −64 cents, `40` = no change, `7F` = +63 cents. This
+also applies to rhythm Parts.
+
+The synthesizer applies Scale Tuning at Note On, as for Fine Tuning. Sounding
+notes do not change.
+
+The data always starts at C. If `F7` ends the message early, the synthesizer
+discards the last value before `F7`. It keeps the values before that one.
+
+Other Part addresses (`40 1n` _other_) do not change Scale Tuning.
 
 [#s5]
 == Presets
