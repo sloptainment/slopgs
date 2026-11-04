@@ -337,8 +337,9 @@ void voice_update_pitch(Voice *v) { voice_update_pitch_at(v, UINT64_MAX); }
 #define GAIN_CEILING (4095.0 / 8192.0)
 
 /* Gain law: read at every segment end (mirrors voice_update_pitch_at) so
- * CC7/CC10/CC11/master-volume changes reach a held note;
- * atten_const_hdb (velocity+region attenuation) is fixed at note-on. */
+ * CC7/CC10/CC11 changes reach a held note;
+ * atten_const_hdb (master volume+velocity+region attenuation) is fixed at
+ * note-on. */
 /* Pan law [A:0x19c12-0x19c2a]: one g_table_lin read forward/reversed, summed
  * into the attenuation before the clamp; the measured "unity at centre" is
  * that clamp, not the law */
@@ -359,8 +360,7 @@ void voice_update_gain_at(Voice *v, uint64_t t)
         return;
     int32_t chan_vol = g_table_vel[synth_ctl_at(v->channel, CTL_VOL, t)];
     int32_t expr = g_table_vel[synth_ctl_at(v->channel, CTL_EXPR, t)];
-    int32_t atten_hdb = g_master_vol_hdb + chan_vol + expr +
-                        v->atten_const_hdb +
+    int32_t atten_hdb = chan_vol + expr + v->atten_const_hdb +
                         voice_lfo(v, v->artic->lfo_atten_cc1_hdb,
                                   v->artic->lfo_atten_inherent_hdb, t);
 
@@ -770,8 +770,10 @@ void voice_note_on(int channel, int note, int velocity)
     }
 
     /* Volume law: velocity/region attenuation fixed at note-on into
-     * atten_const_hdb (0x19b94-0x19bcd); CC7/CC11/CC10/master-vol recomputed
-     * live by voice_update_gain. depth -9600 = full velocity effect. */
+     * atten_const_hdb (0x19b94-0x19bcd); CC7/CC11/CC10 recomputed live by
+     * voice_update_gain. Master Volume is read here only: its one consumer
+     * is the note-on call (0x12fa0, summed at 0x19b86), so a later change
+     * never reaches a held note. depth -9600 = full velocity effect. */
     int32_t vel_atten = g_table_vel[velocity];
     int32_t depth = r->artic->vel_to_atten_depth;
     int32_t scaled = (int32_t)(((int64_t) vel_atten * depth) / -9600);
@@ -779,7 +781,8 @@ void voice_note_on(int channel, int note, int velocity)
      * [A:0x19bcd]: +1200 folded into the sum moves the gain clamp's knee 12 dB
      * earlier, not a flat boost; re-anchoring it with the ceiling was a
      * uniform ~3 dB overshoot and lost on the corpus. */
-    v->atten_const_hdb = scaled + (int32_t) r->attenuation_hdb + 1200;
+    v->atten_const_hdb =
+        g_master_vol_hdb + scaled + (int32_t) r->attenuation_hdb + 1200;
 
     /* Pan: region's pan_cb fixed, channel CC10 combined live in
      * voice_update_gain; rising CC10 attenuates the left (probe 07) */

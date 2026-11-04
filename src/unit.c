@@ -3786,6 +3786,49 @@ static void t_findings_live(void)
         synth_construct();
     }
 
+    tap_diag("--- Master Volume is read at note-on only: the driver's only "
+             "reader of [synth+0xf78] is the note-on call 0x12fa0, folded "
+             "into the voice's constant sum (0x19b86); oracle probe: a held "
+             "note stayed 66.7 -> 66.6 dB while the next note-on fell 24 dB "
+             "(/tmp probe: sine, GM On, Master Volume 0x20 at 1 s) ---");
+    if (have_dls)
+    {
+        synth_construct();
+        voice_pool_reset();
+        synth_midi(0x90, 60, 100);
+        synth_midi(0x91, 60, 100);
+        Voice *a = 0, *b = 0;
+        for (int i = 0; i < NUM_VOICES; i++)
+        {
+            if (g_voices[i].active && g_voices[i].channel == 0)
+                a = &g_voices[i];
+            if (g_voices[i].active && g_voices[i].channel == 1)
+                b = &g_voices[i];
+        }
+        if (a && b)
+        {
+            double before = a->gain_l_target;
+            is_near(b->gain_l_target, before, 1e-12,
+                    "S3.5 same note, same master: equal gain (fixture check)");
+            sy_master_vol(0, 32);
+            voice_update_gain(a);
+            is_near(a->gain_l_target, before, 1e-12,
+                    "S3.5 Master Volume does not reach a held note");
+            synth_midi(0x92, 60, 100);
+            Voice *c = 0;
+            for (int i = 0; i < NUM_VOICES; i++)
+                if (g_voices[i].active && g_voices[i].channel == 2)
+                    c = &g_voices[i];
+            ok(c && c->gain_l_target < before * 0.5,
+               "S3.5 Master Volume applies to the next note-on");
+        }
+        else
+            tap_skip("note-on did not allocate",
+                     "S3.5 Master Volume at note-on");
+        voice_pool_reset();
+        synth_construct();
+    }
+
     tap_diag("--- LFO depth is CC1*ccDepth/127 + inherent, times sine/100, for "
              "both pitch [A:0x189e4] and attenuation [A:0x18992] ---");
     {

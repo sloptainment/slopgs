@@ -91,11 +91,10 @@ queued and folded at the call's end (`0x16b46`, unit.c). The engine times
 note-off, CC120, CC123, the Mono release, CC64's lift and a note-on's
 retrigger and key-group choke this way.
 Open:: Which call site is which event; whether CC64's lift releases at its
-own time; Master Volume is applied at dispatch, its driver path unknown;
-the engine's queue holds 64 nodes per controller, the driver's limit
+own time; the engine's queue holds 64 nodes per controller, the driver's limit
 (`0x16bae`'s allocation) unknown.
 Settle by:: Map the four `0x19a2c` call sites to their events; trace CC64
-and Master Volume (`7F 7F 04 01`) from `0x131c0` to their consumers.
+from `0x131c0` to its consumers.
 Where:: `voice.c` `release_at_event`, `fast_release_at_event`; `synth.c`
 `ctl_record`, `CTL_QUEUE`.
 

@@ -3120,6 +3120,32 @@ def p52_eg2_pitch():
     return _write_manifest("52_eg2_pitch.mid", tr, man)
 
 
+def p53_master_volume_held():
+    """Master Volume is read at note-on only.
+
+    The driver's one reader of the Master Volume slot is the note-on call
+    (0x12fa0, summed at 0x19b86); a later change never reaches a held note.
+    Sine Wave (008:080): a note held 3 s with Master Volume 0x20 landing 1.5 s
+    in (held note keeps its level, so no step at 1.6 s), then a second note
+    after the change (about 24 dB down), then Master Volume back to 0x7F.
+    """
+    tr = Track()
+    man = ["# 53_master_volume_held.mid", "# onset_s\toff_s\tcase"]
+    tr.sysex(0, GS_RESET)
+    clock = t(0.5)
+    tr.cc(clock, 0, 0, 8)
+    tr.cc(clock, 0, 32, 0)
+    tr.prog(clock, 0, 80)
+    tr.note(clock + t(0.1), t(3.0), 0, 60, 100)
+    tr.sysex(clock + t(1.6), [0x7F, 0x7F, 0x04, 0x01, 0x00, 0x20, 0xF7])
+    man.append(f"{clock / TPS + 0.1:.3f}\t{clock / TPS + 3.1:.3f}\theld")
+    clock += t(4.0)
+    tr.note(clock, t(1.5), 0, 60, 100)
+    man.append(f"{clock / TPS:.3f}\t{clock / TPS + 1.5:.3f}\tafter")
+    tr.sysex(clock + t(2.0), [0x7F, 0x7F, 0x04, 0x01, 0x00, 0x7F, 0xF7])
+    return _write_manifest("53_master_volume_held.mid", tr, man)
+
+
 PROBES = [p01_programs, p02_keyrange, p03_velocity, p04_envelope, p05_pitchbend,
           p06_modwheel, p07_pan_volume, p08_reverb, p09_chorus, p10_polyphony,
           p11_drums, p12_gs_sysex, p13_edge, p14_running_status,
@@ -3133,7 +3159,8 @@ PROBES = [p01_programs, p02_keyrange, p03_velocity, p04_envelope, p05_pitchbend,
           p41_sustain_decay_curve, p42_multitrack_same_tick, p43_level_vs_pitch,
           p44_release_shape, p45_release_from_level, p46_noteoff_grid,
           p47_gm_off_state, p48_rhythm_part_reset, p49_gm_off_during_note,
-          p50_gain_ceiling, p51_lfo_tremolo, p52_eg2_pitch]
+          p50_gain_ceiling, p51_lfo_tremolo, p52_eg2_pitch,
+          p53_master_volume_held]
 
 
 def check(path):

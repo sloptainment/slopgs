@@ -111,7 +111,7 @@ typedef struct Voice
      * not the envelope's instant, so the committed ramp lands */
     int amp_retire;
     /* live target gain, recomputed every block by voice_update_gain from
-     * atten_const_hdb plus current channel vol/expr/pan/master vol */
+     * atten_const_hdb plus current channel vol/expr/pan */
     double gain_l_target, gain_r_target;
     /* the same sums before the clamp (pan included, EG1 not): the envelope
      * joins them in dB, see voice_amp */
