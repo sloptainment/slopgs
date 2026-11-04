@@ -4,6 +4,8 @@
 #   dist/msgs-render    native CLI renderer         (src/cli.c  + engine)
 #   dist/alsa-synth     ALSA sequencer synth        (src/alsa-synth/alsa-synth.c + engine,
 #                       needs libasound; not built by `all`)
+#   dist/player         realtime .mid player        (player/player.c + engine,
+#                       needs libasound; not built by `all`)
 #
 # No object files: the engine is small enough (a dozen .c files) that a
 # single whole-program invocation per target recompiles everything in well
@@ -50,7 +52,7 @@ CFLAGS_VSTI := -std=c11 -O2 -Wall -Wextra -Isrc \
                -DVSTI_IMPRECISE_TIMING=$(VSTI_TIMING) \
                -DSERVICE_BLOCK_FRAMES=$(VSTI_SEGMENT)
 
-.PHONY: all clean probes test unit vsti vsti-test alsa-synth
+.PHONY: all clean probes test unit vsti vsti-test alsa-synth player
 
 all: $(DIST)/msgs.wasm $(DIST)/msgs-render
 
@@ -68,6 +70,9 @@ $(DIST)/alsa-synth: src/alsa-synth/alsa-synth.c $(ENGINE_SRCS) $(ENGINE_HDRS) | 
 	$(CC) $(CFLAGS_NATIVE) -D_POSIX_C_SOURCE=200809L \
 	    -DSERVICE_BLOCK_FRAMES=$(VSTI_SEGMENT) -o $@ src/alsa-synth/alsa-synth.c $(ENGINE_SRCS) -lm -lasound
 
+$(DIST)/player: player/player.c $(ENGINE_SRCS) $(ENGINE_HDRS) | $(DIST)
+	$(CC) $(CFLAGS_NATIVE) -D_POSIX_C_SOURCE=200809L -o $@ player/player.c $(ENGINE_SRCS) -lm -lasound
+
 $(DIST)/msgs-unit: $(UNIT_SRCS) $(ENGINE_HDRS) src/unit_tap.h | $(DIST)
 	$(CC) $(CFLAGS_NATIVE) -o $@ $(UNIT_SRCS) -lm
 
@@ -82,7 +87,7 @@ $(DIST):
 
 clean:
 	rm -f $(DIST)/msgs.wasm $(DIST)/msgs-render $(DIST)/msgs-render-x2 $(DIST)/msgs-unit
-	rm -f $(DIST)/msgs-vsti-x86.dll $(DIST)/vsti-test $(DIST)/alsa-synth
+	rm -f $(DIST)/msgs-vsti-x86.dll $(DIST)/vsti-test $(DIST)/alsa-synth $(DIST)/player
 
 probes:
 	python3 artifacts/make_probes.py
@@ -94,6 +99,8 @@ unit: $(DIST)/msgs-unit
 	./$(DIST)/msgs-unit
 
 alsa-synth: $(DIST)/alsa-synth
+
+player: $(DIST)/player
 
 vsti: $(DIST)/msgs-vsti-x86.dll
 
