@@ -211,6 +211,8 @@ sounds until GM System On or System Reset.
 | Master Volume.
 
 Uses `mm` only. `ll` is ignored.
+
+Changes apply on next notes (<<mastervol>>).
 |===
 
 [#roland-sysex]
@@ -766,6 +768,16 @@ The data always starts at C. If `F7` ends the message early, the synthesizer
 discards the last value before `F7`. It keeps the values before that one.
 
 Other Part addresses (`40 1n` _other_) do not change Scale Tuning.
+
+[#mastervol]
+=== Master Volume
+
+Master Volume changes take effect only upon a next
+Note On, not immediately. Fader effects cannot,
+for example, take effect on a held note.
+
+Channel Volume and Expression still work as expected
+and change currently-sounding notes (<<ch-timing>>).
 
 [#s5]
 == Presets
