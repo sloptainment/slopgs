@@ -4,39 +4,17 @@
 #include <stdlib.h>
 #include <string.h>
 
-#include "engine/dls.h"
+#include "engine/engine.h"
 #include "engine/render.h"
-#include "engine/rt.h"
-#include "engine/synth.h"
-#include "engine/tables.h"
-#include "engine/voice.h"
 #include "vst2.h"
 
 extern const unsigned char gm_dls_blob[];
 extern const unsigned int gm_dls_blob_len;
 
-/* allocator: malloc, never freed -- same rationale as cli.c's, gm.dls sample
- * data must outlive every render call for the process's whole life. Skipped
- * under VSTI_TEST_BUILD: the native test harness links src/unit_tap.c, which
- * already provides an identical one (shared with unit.c) -- the DLL build
- * links neither, so it needs this one. */
-#ifndef VSTI_TEST_BUILD
-static uint32_t g_total = 0;
-
-void *rt_alloc(uint32_t nbytes)
-{
-    nbytes = (nbytes + 7u) & ~7u;
-    void *p = calloc(1, nbytes ? nbytes : 8);
-    if (!p)
-        abort();
-    g_total += nbytes;
-    return p;
-}
-
-uint32_t rt_mem_size(void) { return g_total; }
-#endif
-
-static int g_engine_ready = 0;
+/* the one engine, in a malloc'd block never freed -- same rationale as
+ * cli.c's, gm.dls sample data must outlive every render call for the
+ * process's whole life. Not static: the native test harness drives it too. */
+Msgs *g_vsti_engine = 0;
 
 /* One whole service block of engine output, and how far into it the resampler
  * has read. Starting "empty" makes the first read fill it. */
@@ -52,20 +30,21 @@ static uint64_t g_out_pos = 0;
 
 static void engine_init_once(void)
 {
-    if (g_engine_ready)
+    if (g_vsti_engine)
         return;
-    tables_build();
-    dls_load(gm_dls_blob, gm_dls_blob_len);
-    synth_construct();
-    g_engine_ready = 1;
+    uint32_t n = msgs_size(0);
+    g_vsti_engine = msgs_create(malloc(n), n);
+    if (!g_vsti_engine)
+        abort();
+    dls_load(g_vsti_engine, gm_dls_blob, gm_dls_blob_len);
+    synth_construct(g_vsti_engine);
 }
 
-/* ponytail: g_channels/g_voices/g_dls are one process-global engine, so two
- * instances in one host would fight over it. First instance to construct
- * wins and renders; later instances still hand back a valid AEffect and
- * silently zero their output. Ceiling: one sounding instance per host
- * process. Upgrade path: thread a context struct through the engine globals
- * so each instance gets its own state. */
+/* ponytail: one engine per process, so two instances in one host would fight
+ * over it. First instance to construct wins and renders; later instances
+ * still hand back a valid AEffect and silently zero their output. Ceiling:
+ * one sounding instance per host process. Upgrade path: the engine is
+ * re-entrant now -- give each VstiInstance its own Msgs. */
 static int g_have_master = 0;
 
 #define VSTI_MIN_RATE 5512
@@ -202,17 +181,18 @@ static void render_service_block(VstiInstance *vi)
             q->engine_frame > g_block_start)
         {
             uint64_t off = q->engine_frame - g_block_start;
-            voice_set_event_offset(off < SERVICE_BLOCK_FRAMES
+            voice_set_event_offset(g_vsti_engine,
+                                   off < SERVICE_BLOCK_FRAMES
                                        ? (uint32_t) off
                                        : SERVICE_BLOCK_FRAMES - 1);
         }
 #endif
-        synth_midi(q->status, q->d1, q->d2);
-        voice_set_event_offset(0);
+        synth_midi(g_vsti_engine, q->status, q->d1, q->d2);
+        voice_set_event_offset(g_vsti_engine, 0);
     }
     vi->queue_count = kept;
 
-    render_frames(g_block, SERVICE_BLOCK_FRAMES);
+    render_frames(g_vsti_engine, g_block, SERVICE_BLOCK_FRAMES);
     g_block_read = 0;
 }
 
@@ -473,7 +453,7 @@ static VstIntPtr VST2_CDECL vsti_dispatch(AEffect *effect, int32_t opcode,
             if (value == 0 && vi->is_master)
             {
                 for (int ch = 0; ch < 16; ch++)
-                    synth_midi((uint32_t) (0xB0 | ch), 120, 0);
+                    synth_midi(g_vsti_engine, (uint32_t) (0xB0 | ch), 120, 0);
                 vi->queue_count = 0;
             }
             return 1;
@@ -555,7 +535,7 @@ VSTI_EXPORT AEffect *VST2_CDECL VSTPluginMain(AudioMasterCallback host)
          * on it, 0x1341e/0x13492). Set here rather than in
          * engine_init_once because synth_construct() runs synth_reset(), which
          * clears it, so it has to be re-established per master instance. */
-        g_gs_mode = 1;
+        g_vsti_engine->gs_mode = 1;
     }
 
     AEffect *e = &vi->effect;

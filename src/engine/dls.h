@@ -4,6 +4,7 @@
 #ifndef DLS_H
 #define DLS_H
 
+#include "msgs.h"
 #include <stdint.h>
 
 typedef struct Wave
@@ -144,15 +145,14 @@ typedef struct DlsCollection
     int valid;
 } DlsCollection;
 
-extern DlsCollection g_dls;
-
 /* Parses a DLS-1 RIFF collection in place; sample data is referenced into
  * `data`, never copied (the driver reads the file into one never-freed
  * buffer, 0x15efa). */
-int dls_load(const uint8_t *data, uint32_t len);
+int dls_load(Msgs *e, const uint8_t *data, uint32_t len);
 
 /* Three-tier bank/program/drum fallback + region lookup (0x12e19-0x12e7a). */
 /* `resolved` (nullable) receives the locale after fallback stripping. */
-Region *dls_find_region(uint32_t locale, uint8_t note, uint32_t *resolved);
+Region *dls_find_region(Msgs *e, uint32_t locale, uint8_t note,
+                        uint32_t *resolved);
 
 #endif /* DLS_H */

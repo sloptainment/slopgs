@@ -12,31 +12,8 @@
 #include <stdio.h>
 #include <stdlib.h>
 
-#include "engine/dls.h"
+#include "engine/engine.h"
 #include "engine/render.h"
-#include "engine/rt.h"
-#include "engine/synth.h"
-#include "engine/tables.h"
-#include "engine/voice.h"
-
-/* allocator: malloc, never freed -- gm.dls's sample data is referenced in
- * place and must outlive every render call. */
-static uint32_t g_total = 0;
-
-void *rt_alloc(uint32_t nbytes)
-{
-    nbytes = (nbytes + 7u) & ~7u;
-    void *p = calloc(1, nbytes ? nbytes : 8);
-    if (!p)
-    {
-        fprintf(stderr, "alsa-synth: out of memory (%u bytes)\n", nbytes);
-        exit(3);
-    }
-    g_total += nbytes;
-    return p;
-}
-
-uint32_t rt_mem_size(void) { return g_total; }
 
 /* A block and a half of buffer: writei blocks until a whole block fits, so
    this is also how far ahead of the speaker each block is rendered, and so
@@ -50,7 +27,7 @@ static void die(const char *what, int err)
 }
 
 // Pending sequencer events -> engine, none are held back for later.
-static void drain_events(snd_seq_t *seq, snd_midi_event_t *dec)
+static void drain_events(Msgs *e, snd_seq_t *seq, snd_midi_event_t *dec)
 {
     snd_seq_event_t *ev;
     static uint8_t msg[512];
@@ -60,9 +37,9 @@ static void drain_events(snd_seq_t *seq, snd_midi_event_t *dec)
         if (n < 1)
             continue;
         if (msg[0] == 0xF0)
-            synth_sysex(msg + 1, (uint32_t) n - 1);
+            synth_sysex(e, msg + 1, (uint32_t) n - 1);
         else if (msg[0] < 0xF0)
-            synth_midi(msg[0], n > 1 ? msg[1] : 0, n > 2 ? msg[2] : 0);
+            synth_midi(e, msg[0], n > 1 ? msg[1] : 0, n > 2 ? msg[2] : 0);
     }
 }
 
@@ -88,14 +65,20 @@ int main(int argc, char **argv)
     }
     fclose(f);
 
-    tables_build();
+    uint32_t n = msgs_size(0);
+    Msgs *e = msgs_create(malloc(n), n);
+    if (!e)
+    {
+        fprintf(stderr, "alsa-synth: out of memory (%u bytes)\n", n);
+        return 3;
+    }
     // referenced in place: never freed
-    if (dls_load(dls, (uint32_t) dls_len) != 0)
+    if (dls_load(e, dls, (uint32_t) dls_len) != 0)
     {
         fprintf(stderr, "alsa-synth: %s is not a usable gm.dls\n", dls_path);
         return 2;
     }
-    synth_construct();
+    synth_construct(e);
 
     snd_seq_t *seq;
     int err =
@@ -134,8 +117,8 @@ int main(int argc, char **argv)
     static int16_t block[SERVICE_BLOCK_FRAMES * 2];
     for (;;)
     {
-        drain_events(seq, dec);
-        render_frames(block, SERVICE_BLOCK_FRAMES);
+        drain_events(e, seq, dec);
+        render_frames(e, block, SERVICE_BLOCK_FRAMES);
         // blocks until the device has room: this is the clock
         snd_pcm_sframes_t w = snd_pcm_writei(pcm, block, SERVICE_BLOCK_FRAMES);
         if (w < 0 && snd_pcm_recover(pcm, (int) w, 1) < 0)

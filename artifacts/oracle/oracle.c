@@ -12,6 +12,7 @@
  * Entry point VMAs come from the driver's public symbols (swmidi.pdb). */
 #include <stdint.h>
 
+#include "engine/engine.h"
 #include "engine/smf.h"
 
 #ifndef SWMIDI_SYS
@@ -103,7 +104,7 @@ void *memset(void *d, int c, uint32_t n)
 static uint8_t g_heap[256u << 20] __attribute__((aligned(16)));
 static uint32_t g_heap_used;
 
-void *rt_alloc(uint32_t n)
+static void *heap_alloc(uint32_t n)
 {
     n = (n + 15u) & ~15u;
     if (n > sizeof g_heap - g_heap_used)
@@ -120,7 +121,7 @@ static uint8_t *read_file(const char *path, uint32_t *len)
         return 0;
     int32_t n = sys3(19, fd, 0, 2); /* SEEK_END */
     sys_lseek(fd, 0);
-    uint8_t *p = rt_alloc((uint32_t) n + 1);
+    uint8_t *p = heap_alloc((uint32_t) n + 1);
     int32_t got = 0;
     while (got < n)
     {
@@ -152,7 +153,7 @@ typedef struct
 static STDCALL void *ExAllocatePoolWithTag(int type, uint32_t n, uint32_t tag)
 {
     (void) type, (void) tag;
-    return rt_alloc(n);
+    return heap_alloc(n);
 }
 static STDCALL void ExFreePool(void *p) { (void) p; }
 
@@ -482,36 +483,50 @@ static void driver_start(void)
     if (!((StaticInitRet) at(0x16962))()) /* MIDIRecorder::InitEventList */
         die("InitEventList failed", 0);
     /* PinDispatchCreate [A:0x18402]: 22050 Hz stereo, loads gm.dls */
-    g_cl = rt_alloc(CONTROL_LOGIC_SIZE);
+    g_cl = heap_alloc(CONTROL_LOGIC_SIZE);
     ((Ctor) at(0x12984))(g_cl); /* ControlLogic::ControlLogic */
 }
 
 /* ---- the hooks smf.c drives -------------------------------------------- */
 
-void voice_set_event_offset(uint32_t frames) { g_off = frames; }
+/* smf.c's engine: only its sequencer state and arena are used */
+static Msgs g_msgs;
 
-void synth_midi(uint32_t status, uint32_t d1, uint32_t d2)
+void voice_set_event_offset(Msgs *e, uint32_t frames)
 {
+    (void) e;
+    g_off = frames;
+}
+
+void synth_midi(Msgs *e, uint32_t status, uint32_t d1, uint32_t d2)
+{
+    (void) e;
     ((RecordMidiFn) at(0x131c0))(g_cl, (int64_t) (g_pos + g_off),
                                  (uint8_t) status, (uint8_t) d1, (uint8_t) d2);
 }
 
 /* smf.c strips the F0; the driver wants the whole message [A:0x13699] */
-void synth_sysex(const uint8_t *buf, uint32_t len)
+void synth_sysex(Msgs *e, const uint8_t *buf, uint32_t len)
 {
-    uint8_t *m = rt_alloc(len + 1);
+    (void) e;
+    uint8_t *m = heap_alloc(len + 1);
     m[0] = 0xF0;
     memcpy(m + 1, buf, len);
     ((RecordSysExFn) at(0x1367a))(g_cl, (int64_t) (g_pos + g_off), len + 1, m);
 }
 
-void render_frames(int16_t *out, uint32_t frames)
+void render_frames(Msgs *e, int16_t *out, uint32_t frames)
 {
+    (void) e;
     ((MixFn) at(0x13054))(g_cl, out, frames); /* ControlLogic::Mix */
     g_pos += frames;
 }
 
-int voice_any_active(void) { return *(void **) (g_cl + CL_VOICES_ACTIVE) != 0; }
+int voice_any_active(Msgs *e)
+{
+    (void) e;
+    return *(void **) (g_cl + CL_VOICES_ACTIVE) != 0;
+}
 
 /* ---- main -------------------------------------------------------------- */
 
@@ -546,7 +561,7 @@ static int oracle_main(int argc, char **argv)
         k++;
     if (!flag[k])
     {
-        smf_set_jitter_ms(to_u32(argv[1] + k));
+        smf_set_jitter_ms(&g_msgs, to_u32(argv[1] + k));
         argv++;
         argc--;
     }
@@ -568,11 +583,13 @@ static int oracle_main(int argc, char **argv)
        same event sample times. The driver runs under it too: 0x27F and 0x37F
        render all 58 probes and tests/ byte-identically. */
     set_fpu_cw(0x27F);
-    if (smf_load(smf, smf_len) != 0)
+    g_msgs.arena.size = smf_mem_bound(smf_len);
+    g_msgs.arena.base = heap_alloc(g_msgs.arena.size);
+    if (smf_load(&g_msgs, smf, smf_len) != 0)
         die("bad smf", argv[2]);
     load_driver(SWMIDI_SYS);
     driver_start();
-    smf_set_loop((int32_t) to_u32(argv[3]));
+    smf_set_loop(&g_msgs, (int32_t) to_u32(argv[3]));
 
     int fd = sys_open(argv[5], 01 | 0100 | 01000); /* WRONLY|CREAT|TRUNC */
     if (fd < 0)
@@ -582,11 +599,11 @@ static int oracle_main(int argc, char **argv)
     uint32_t total = 0;
     for (;;)
     {
-        uint32_t n = smf_render(buf, ORACLE_MIX_FRAMES);
+        uint32_t n = smf_render(&g_msgs, buf, ORACLE_MIX_FRAMES);
         if (sys_write(fd, buf, (int32_t) (n * 4)) != (int32_t) (n * 4))
             die("short write", argv[5]);
         total += n;
-        if (n == 0 || smf_is_finished() || total >= max_frames)
+        if (n == 0 || smf_is_finished(&g_msgs) || total >= max_frames)
             break;
     }
     wav_header(fd, total);

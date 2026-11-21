@@ -8,17 +8,52 @@
  * Run with `make unit` (builds dist/msgs-unit) or `./dist/msgs-unit`. TAP 14.
  */
 
-#include "engine/dls.h"
+#include "engine/engine.h"
 #include "engine/render.h"
-#include "engine/rt.h"
-#include "engine/synth.h"
-#include "engine/tables.h"
-#include "engine/voice.h"
 #include "unit_tap.h"
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+
+/* One engine instance under the names its state and functions had as C
+ * globals, so every assertion reads as it was written. main() creates it. */
+static Msgs *g_eng;
+#define g_dls (g_eng->dls)
+#define g_channels (g_eng->channels)
+#define g_gs_mode (g_eng->gs_mode)
+#define g_master_vol_hdb (g_eng->master_vol_hdb)
+#define g_voices (g_eng->voices)
+#define g_voice_age_counter (g_eng->voice_age_counter)
+#define g_now (g_eng->now)
+#define g_table_cents (g_eng->tab.cents)
+#define g_table_semi (g_eng->tab.semi)
+#define g_table_vel (g_eng->tab.vel)
+#define g_table_lin (g_eng->tab.lin)
+#define g_table_dbamp (g_eng->tab.dbamp)
+#define g_table_envshape (g_eng->tab.envshape)
+#define g_table_sine (g_eng->tab.sine)
+#define g_table_companding (g_eng->tab.companding)
+#define tables_build() tables_build(&g_eng->tab)
+#define synth_construct() synth_construct(g_eng)
+#define voice_pool_reset() voice_pool_reset(g_eng)
+#define voice_any_active() voice_any_active(g_eng)
+#define dls_load(...) dls_load(g_eng, __VA_ARGS__)
+#define dls_find_region(...) dls_find_region(g_eng, __VA_ARGS__)
+#define synth_midi(...) synth_midi(g_eng, __VA_ARGS__)
+#define synth_sysex(...) synth_sysex(g_eng, __VA_ARGS__)
+#define synth_channel_locale(...) synth_channel_locale(g_eng, __VA_ARGS__)
+#define synth_pitch_bend_cents(...) synth_pitch_bend_cents(g_eng, __VA_ARGS__)
+#define synth_ctl_at(...) synth_ctl_at(g_eng, __VA_ARGS__)
+#define voice_note_on(...) voice_note_on(g_eng, __VA_ARGS__)
+#define voice_note_off(...) voice_note_off(g_eng, __VA_ARGS__)
+#define voice_set_event_offset(...) voice_set_event_offset(g_eng, __VA_ARGS__)
+#define voice_update_pitch(...) voice_update_pitch(g_eng, __VA_ARGS__)
+#define voice_update_gain(...) voice_update_gain(g_eng, __VA_ARGS__)
+#define voice_step_envelope(...) voice_step_envelope(g_eng, __VA_ARGS__)
+#define voice_topup_tick(...) voice_topup_tick(g_eng, __VA_ARGS__)
+#define voice_amp(...) voice_amp(g_eng, __VA_ARGS__)
+#define render_frames(...) render_frames(g_eng, __VA_ARGS__)
 
 static int have_dls; /* set by main(): 1 if dist/gm.dls loaded and parsed */
 
@@ -5011,6 +5046,12 @@ static void t_findings_dls(void)
 int main(void)
 {
     tap_begin();
+    {
+        uint32_t n = msgs_size(0);
+        g_eng = msgs_create(malloc(n), n);
+        if (!g_eng)
+            tap_bail("engine init failed: msgs_create");
+    }
     tables_build();
     /* Engine-cannot-initialise check: if the table builder did not run, nothing
      * downstream is meaningful. S1.4.4 Q12 unity is the cheapest proof it ran.

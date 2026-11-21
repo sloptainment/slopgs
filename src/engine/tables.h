@@ -4,22 +4,18 @@
 
 #include <stdint.h>
 
-extern int32_t g_table_cents[201];
+typedef struct Tables
+{
+    int32_t cents[201];
+    int32_t semi[97];
+    int32_t vel[128];
+    int32_t lin[128];
+    int32_t dbamp[1001];
+    int16_t envshape[201];
+    int16_t sine[256];
+    uint8_t companding[2048];
+} Tables;
 
-extern int32_t g_table_semi[97];
-
-extern int32_t g_table_vel[128];
-
-extern int32_t g_table_lin[128];
-
-extern int32_t g_table_dbamp[1001];
-
-extern int16_t g_table_envshape[201];
-
-extern int16_t g_table_sine[256];
-
-extern uint8_t g_table_companding[2048];
-
-void tables_build(void);
+void tables_build(Tables *t);
 
 #endif /* TABLES_H */

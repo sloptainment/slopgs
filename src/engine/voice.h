@@ -4,6 +4,7 @@
 #define VOICE_H
 
 #include "dls.h"
+#include "msgs.h"
 #include <stdint.h>
 
 /* every fitted constant here is measured against it; RESAMPLE_FACTOR ships at
@@ -89,7 +90,7 @@ typedef struct Voice
      * the note's time, once the whole call's events are queued (0x12bd6
      * sets notes up at Mix start, after RecordMIDI) */
     int starting;
-    /* g_now frame a dispatched note-off releases EG1/EG2 at; VOICE_NO_RELEASE
+    /* e->now frame a dispatched note-off releases EG1/EG2 at; VOICE_NO_RELEASE
      * if none is pending [A:0x19a3d]-[A:0x19a6f] */
     uint64_t release_at;
     /* ...and whether that release is a fast one (0x19aa4) */
@@ -181,50 +182,49 @@ typedef struct Voice
     uint64_t lfo_elapsed;
 } Voice;
 
-extern Voice g_voices[NUM_VOICES];
-extern uint32_t g_voice_age_counter;
-
-void voice_pool_reset(void);
-void voice_note_on(int channel, int note, int velocity);
+void voice_pool_reset(Msgs *e);
+void voice_note_on(Msgs *e, int channel, int note, int velocity);
 
 /* TopUpReserve (0x12b6a): tops the reserve via Branch A (retag free primary
  * nodes) then Branch B (fast-release active voices), on a wall-clock tick */
-void voice_topup_tick(uint32_t frames);
-void voice_note_off(int channel, int note);
-void voice_all_sound_off(int channel); /* CC120: bypasses sustain hold */
-void voice_all_notes_off(int channel); /* CC123: honours sustain hold */
+void voice_topup_tick(Msgs *e, uint32_t frames);
+void voice_note_off(Msgs *e, int channel, int note);
+void voice_all_sound_off(Msgs *e,
+                         int channel); /* CC120: bypasses sustain hold */
+void voice_all_notes_off(Msgs *e,
+                         int channel); /* CC123: honours sustain hold */
 /* CC64 released: release deferred voices */
-void voice_sustain_lift(int channel);
+void voice_sustain_lift(Msgs *e, int channel);
 
-double voice_step_envelope(Voice *v);
+double voice_step_envelope(Msgs *e, Voice *v);
 
-void voice_set_event_offset(uint32_t frames);
-/* g_now plus the offset of the event being dispatched */
-uint64_t voice_event_time(void);
+void voice_set_event_offset(Msgs *e, uint32_t frames);
+/* e->now plus the offset of the event being dispatched */
+uint64_t voice_event_time(Msgs *e);
 #define VOICE_NO_RELEASE UINT64_MAX
 
 /* "no scheduled boundary" sentinel for voice_env_frames_to_change, below */
 #define ENV_NO_CHANGE 0xFFFFFFFFu
 uint32_t voice_env_frames_to_change(const Voice *v);
 
-int voice_any_active(void);
+int voice_any_active(Msgs *e);
 
 /* phase_step_target from v->base_cents plus every live pitch source (bend
  * and CC1 as due at time t, LFO at lfo_elapsed, EG2) -- the ONLY place it is
  * computed; voice_update_pitch reads the newest values */
-void voice_update_pitch_at(Voice *v, uint64_t t);
-void voice_update_pitch(Voice *v);
+void voice_update_pitch_at(Msgs *e, Voice *v, uint64_t t);
+void voice_update_pitch(Msgs *e, Voice *v);
 
 /* gain_l/r_target and atten_l/r_hdb from atten_const_hdb plus master and
  * CC7/CC11/CC10/CC1 as due at time t -- the ONLY place gain is computed */
-void voice_update_gain_at(Voice *v, uint64_t t);
-void voice_update_gain(Voice *v);
+void voice_update_gain_at(Msgs *e, Voice *v, uint64_t t);
+void voice_update_gain(Msgs *e, Voice *v);
 /* the release a note-off scheduled, reached at EG2 frame eg2_t */
 void voice_release_due(Voice *v, uint64_t eg2_t);
 
 /* gain for a pre-clamp attenuation sum with EG1's level added in dB before
  * the ceiling clamp [A:0x18ff7]; env_hdb from voice_env_hdb */
-double voice_amp(int32_t atten_hdb, int32_t env_hdb);
+double voice_amp(Msgs *e, int32_t atten_hdb, int32_t env_hdb);
 int32_t voice_env_hdb(double env_level);
 
 /* Frames between phase-step refreshes in a segment of `seg` BASE_RATE frames,
@@ -240,9 +240,6 @@ void voice_eg2_segment(Voice *v, uint32_t frames);
 uint32_t voice_eg2_render_frames_to_change(const Voice *v);
 
 uint32_t voice_stair_frames(uint32_t seg, int32_t d_att, int32_t d_cents);
-
-/* RENDER_RATE frames rendered so far; render_frames advances it */
-extern uint64_t g_now;
 
 /* frames from the voice's clock (eg2_t) to its next segment end, before the
  * Mix end clips it [A:0x196cd]-[A:0x196f0] */

@@ -8,11 +8,17 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "engine/engine.h"
 #include "engine/render.h"
-#include "engine/synth.h"
-#include "engine/voice.h"
 #include "unit_tap.h"
 #include "vst2.h"
+
+/* the plugin's engine under its old global names, as in unit.c */
+extern Msgs *g_vsti_engine;
+#define g_channels (g_vsti_engine->channels)
+#define synth_construct() synth_construct(g_vsti_engine)
+#define synth_midi(...) synth_midi(g_vsti_engine, __VA_ARGS__)
+#define render_frames(...) render_frames(g_vsti_engine, __VA_ARGS__)
 
 /* Part 9 asserts opposite outcomes per mode, and an undefined macro is 0 to
  * `#if` -- silently the wrong branch. The Makefile passes this to both

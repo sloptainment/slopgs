@@ -1,10 +1,8 @@
 /* smf.c -- Standard MIDI File parser and sequencer. Not part of the original
  * driver: ordinary generic SMF handling. */
 #include "smf.h"
+#include "engine.h"
 #include "render.h"
-#include "rt.h"
-#include "synth.h"
-#include "voice.h"
 
 enum
 {
@@ -26,17 +24,6 @@ typedef struct Event
     uint32_t tempo_usec;  // kind == EKIND_TEMPO
     uint32_t sample_time; // computed
 } Event;
-
-static Event *g_events = 0;
-static uint32_t g_event_count = 0;
-static uint32_t g_song_length_samples = 0;
-
-static uint32_t g_event_index = 0;
-static uint32_t g_sample_pos = 0;
-static int32_t g_loop_remaining = 0; /* -1 = infinite, 0 = no more loops */
-static int g_finished = 0;
-static int g_loaded = 0;
-static uint32_t g_jitter_ms = 0; /* smf_set_jitter_ms */
 
 static uint32_t rd_u32be(const uint8_t *p)
 {
@@ -263,11 +250,13 @@ static int event_less(const Event *a, const Event *b)
 
 /* Stable bottom-up merge sort using one scratch buffer (bump-allocated once).
  */
-static void merge_sort_events(Event *arr, uint32_t n)
+static int merge_sort_events(Msgs *e, Event *arr, uint32_t n)
 {
     if (n < 2)
-        return;
-    Event *tmp = (Event *) rt_alloc(n * sizeof(Event));
+        return 0;
+    Event *tmp = (Event *) rt_alloc(&e->arena, n * sizeof(Event));
+    if (!tmp)
+        return MSGS_ENOMEM;
     for (uint32_t width = 1; width < n; width *= 2)
     {
         for (uint32_t i = 0; i < n; i += 2 * width)
@@ -290,17 +279,28 @@ static void merge_sort_events(Event *arr, uint32_t n)
         for (uint32_t i = 0; i < n; i++)
             arr[i] = tmp[i];
     }
+    return 0;
 }
 
-int smf_load(const uint8_t *data, uint32_t len)
+/* every event takes at least two track bytes (delta + one data byte), and a
+ * load holds the event array and its sort scratch at once */
+uint32_t smf_mem_bound(uint32_t len)
 {
-    g_loaded = 0;
-    g_events = 0;
-    g_event_count = 0;
-    g_song_length_samples = 0;
+    uint64_t n = (uint64_t) len * sizeof(Event) + 16;
+    return n > UINT32_MAX ? UINT32_MAX : (uint32_t) n;
+}
+
+int smf_load(Msgs *e, const uint8_t *data, uint32_t len)
+{
+    /* the previous song's events are the only thing past the DLS */
+    e->arena.used = e->song_mark;
+    e->smf.loaded = 0;
+    e->smf.events = 0;
+    e->smf.event_count = 0;
+    e->smf.song_length_samples = 0;
     /* a new song starts at its own tick 0, not wherever the previous one
      * stopped */
-    smf_rewind();
+    smf_rewind(e);
 
     if (len < 14)
         return -1;
@@ -348,11 +348,14 @@ int smf_load(const uint8_t *data, uint32_t len)
 
     if (total == 0)
     {
-        g_loaded = 1; /* an empty song is a valid (trivially silent) load */
+        e->smf.loaded =
+            1; /* an empty song is a valid (trivially silent) load */
         return 0;
     }
 
-    Event *arr = (Event *) rt_alloc(total * sizeof(Event));
+    Event *arr = (Event *) rt_alloc(&e->arena, total * sizeof(Event));
+    if (!arr)
+        return MSGS_ENOMEM;
     FillCtx fc;
     fc.arr = arr;
     fc.idx = 0;
@@ -362,7 +365,8 @@ int smf_load(const uint8_t *data, uint32_t len)
                    track_seq_bases[i]);
     }
 
-    merge_sort_events(arr, total);
+    if (merge_sort_events(e, arr, total))
+        return MSGS_ENOMEM;
 #if SMF_BANKPROG_LOOKAHEAD
     slide_notes_past_bankprog(arr, total);
 #endif
@@ -411,9 +415,9 @@ int smf_load(const uint8_t *data, uint32_t len)
     /* Each tick's events arrive late by one uniform draw, never reordered.
      * xorshift32 reseeded per load, so a render replays exactly; drawn in
      * 1/1024ths of the span, so the realization is rate-independent. */
-    if (g_jitter_ms)
+    if (e->smf.jitter_ms)
     {
-        uint32_t span = g_jitter_ms * BASE_RATE / 1000;
+        uint32_t span = e->smf.jitter_ms * BASE_RATE / 1000;
         uint32_t x = 2463534242u, late = 0, last = 0;
         for (uint32_t i = 0; i < total; i++)
         {
@@ -430,26 +434,29 @@ int smf_load(const uint8_t *data, uint32_t len)
         }
     }
 
-    g_events = arr;
-    g_event_count = total;
-    g_song_length_samples = arr[total - 1].sample_time;
-    g_loaded = 1;
+    e->smf.events = arr;
+    e->smf.event_count = total;
+    e->smf.song_length_samples = arr[total - 1].sample_time;
+    e->smf.loaded = 1;
     return 0;
 }
 
-void smf_set_loop(int32_t loops) { g_loop_remaining = loops; }
+void smf_set_loop(Msgs *e, int32_t loops) { e->smf.loop_remaining = loops; }
 
 /* clamped to 1 s, which keeps the span arithmetic within 32 bits */
-void smf_set_jitter_ms(uint32_t ms) { g_jitter_ms = ms > 1000 ? 1000 : ms; }
-
-static void dispatch_event(Event *e)
+void smf_set_jitter_ms(Msgs *e, uint32_t ms)
 {
-    switch (e->kind)
+    e->smf.jitter_ms = ms > 1000 ? 1000 : ms;
+}
+
+static void dispatch_event(Msgs *e, Event *ev)
+{
+    switch (ev->kind)
     {
         case EKIND_MIDI:
-            return synth_midi(e->status, e->d1, e->d2);
+            return synth_midi(e, ev->status, ev->d1, ev->d2);
         case EKIND_SYSEX:
-            return synth_sysex(e->data, e->data_len);
+            return synth_sysex(e, ev->data, ev->data_len);
         case EKIND_TEMPO:
             /* no action, already folded into sample_time precompute */
             break;
@@ -458,42 +465,43 @@ static void dispatch_event(Event *e)
 
 /* Rewinds to tick 0 and clears the finished latch -- without this, a replayed
  * song would report "finished" on its very first render call. */
-void smf_rewind(void)
+void smf_rewind(Msgs *e)
 {
-    g_event_index = 0;
-    g_sample_pos = 0;
-    g_finished = 0;
+    e->smf.event_index = 0;
+    e->smf.sample_pos = 0;
+    e->smf.finished = 0;
 }
 
-uint32_t smf_render(int16_t *out, uint32_t frames)
+uint32_t smf_render(Msgs *e, int16_t *out, uint32_t frames)
 {
-    if (!g_loaded)
+    if (!e->smf.loaded)
     {
         /* No SMF loaded: msgs_render still renders active voices from direct
          * msgs_midi() injection (ABI requirement). */
-        render_frames(out, frames);
+        render_frames(e, out, frames);
         return frames;
     }
 
     uint32_t produced = 0;
     while (produced < frames)
     {
-        while (g_event_index < g_event_count &&
-               g_events[g_event_index].sample_time <= g_sample_pos)
+        while (e->smf.event_index < e->smf.event_count &&
+               e->smf.events[e->smf.event_index].sample_time <=
+                   e->smf.sample_pos)
         {
-            dispatch_event(&g_events[g_event_index]);
-            g_event_index++;
+            dispatch_event(e, &e->smf.events[e->smf.event_index]);
+            e->smf.event_index++;
         }
 
-        int song_ended = (g_event_index >= g_event_count) &&
-                         (g_sample_pos >= g_song_length_samples);
+        int song_ended = (e->smf.event_index >= e->smf.event_count) &&
+                         (e->smf.sample_pos >= e->smf.song_length_samples);
         if (song_ended)
         {
-            if (g_loop_remaining != 0)
+            if (e->smf.loop_remaining != 0)
             {
-                if (g_loop_remaining > 0)
-                    g_loop_remaining--;
-                smf_rewind();
+                if (e->smf.loop_remaining > 0)
+                    e->smf.loop_remaining--;
+                smf_rewind(e);
                 continue;
             }
             else
@@ -501,16 +509,16 @@ uint32_t smf_render(int16_t *out, uint32_t frames)
                 /* the tail too renders in Mix-sized calls on the block grid:
                    a segment never runs past a call's end */
                 uint32_t tail = SERVICE_BLOCK_FRAMES -
-                                (g_sample_pos % SERVICE_BLOCK_FRAMES);
+                                (e->smf.sample_pos % SERVICE_BLOCK_FRAMES);
                 if (tail > frames - produced)
                     tail = frames - produced;
-                render_frames(out + produced * 2, tail);
+                render_frames(e, out + produced * 2, tail);
                 produced += tail;
-                g_sample_pos += tail;
+                e->smf.sample_pos += tail;
                 if (produced < frames)
                     continue;
-                if (!voice_any_active())
-                    g_finished = 1;
+                if (!voice_any_active(e))
+                    e->smf.finished = 1;
                 break;
             }
         }
@@ -518,7 +526,7 @@ uint32_t smf_render(int16_t *out, uint32_t frames)
         /* Blocks are anchored to the absolute sample position, not the call's
          * start, so the grid doesn't move with the host's buffer size. */
         uint32_t chunk =
-            SERVICE_BLOCK_FRAMES - (g_sample_pos % SERVICE_BLOCK_FRAMES);
+            SERVICE_BLOCK_FRAMES - (e->smf.sample_pos % SERVICE_BLOCK_FRAMES);
         if (chunk > frames - produced)
             chunk = frames - produced;
 
@@ -529,20 +537,22 @@ uint32_t smf_render(int16_t *out, uint32_t frames)
          * its sub-block offset; note-ons, note-offs and the live controllers
          * act at that time, everything else (a USE RHYTHM PART cut, probe 48)
          * at the block top. */
-        while (g_event_index < g_event_count &&
-               g_events[g_event_index].sample_time < g_sample_pos + chunk)
+        while (e->smf.event_index < e->smf.event_count &&
+               e->smf.events[e->smf.event_index].sample_time <
+                   e->smf.sample_pos + chunk)
         {
-            voice_set_event_offset(g_events[g_event_index].sample_time -
-                                   g_sample_pos);
-            dispatch_event(&g_events[g_event_index]);
-            g_event_index++;
+            voice_set_event_offset(
+                e, e->smf.events[e->smf.event_index].sample_time -
+                       e->smf.sample_pos);
+            dispatch_event(e, &e->smf.events[e->smf.event_index]);
+            e->smf.event_index++;
         }
-        voice_set_event_offset(0);
-        render_frames(out + produced * 2, chunk);
+        voice_set_event_offset(e, 0);
+        render_frames(e, out + produced * 2, chunk);
         produced += chunk;
-        g_sample_pos += chunk;
+        e->smf.sample_pos += chunk;
     }
     return produced;
 }
 
-int32_t smf_is_finished(void) { return g_finished; }
+int32_t smf_is_finished(Msgs *e) { return e->smf.finished; }

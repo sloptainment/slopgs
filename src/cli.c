@@ -6,34 +6,9 @@
 #include <stdlib.h>
 #include <string.h>
 
-#include "engine/dls.h"
+#include "engine/engine.h"
 #include "engine/render.h"
-#include "engine/rt.h"
 #include "engine/smf.h"
-#include "engine/synth.h"
-#include "engine/tables.h"
-#include "engine/voice.h"
-
-/* allocator: malloc, never freed -- gm.dls's sample data is referenced in
- * place and must outlive every render call; the process renders once and exits.
- */
-
-static uint32_t g_total = 0;
-
-void *rt_alloc(uint32_t nbytes)
-{
-    nbytes = (nbytes + 7u) & ~7u;
-    void *p = calloc(1, nbytes ? nbytes : 8);
-    if (!p)
-    {
-        fprintf(stderr, "msgs-render: out of memory (%u bytes)\n", nbytes);
-        exit(3);
-    }
-    g_total += nbytes;
-    return p;
-}
-
-uint32_t rt_mem_size(void) { return g_total; }
 
 static unsigned char *read_file(const char *path, uint32_t *len_out)
 {
@@ -117,6 +92,21 @@ static void emit(int abi, int init_ret, int load_ret, unsigned long frames,
 
 #define CHUNK 4096
 
+/* one engine in a malloc'd block sized for SMFs up to max_smf_len; never
+ * freed: gm.dls's sample data is referenced in place and must outlive every
+ * render call, and the process renders once and exits */
+static Msgs *new_engine(uint32_t max_smf_len)
+{
+    uint32_t n = msgs_size(max_smf_len);
+    Msgs *e = msgs_create(malloc(n), n);
+    if (!e)
+    {
+        fprintf(stderr, "msgs-render: out of memory (%u bytes)\n", n);
+        exit(3);
+    }
+    return e;
+}
+
 /* --selftest: replay/reload check, guards a real bug -- before smf_rewind()
  * existed, msgs_is_finished()'s latch never cleared, so a second loaded song
  * reported "finished" immediately. */
@@ -131,8 +121,8 @@ static int selftest(const char *dls_path, const char *smf_path)
         return 1;
     }
 
-    tables_build();
-    if (dls_load(dls, dls_len) != 0)
+    Msgs *e = new_engine(smf_len);
+    if (dls_load(e, dls, dls_len) != 0)
     {
         fprintf(stderr, "selftest: dls_load failed\n");
         return 1;
@@ -147,15 +137,15 @@ static int selftest(const char *dls_path, const char *smf_path)
     long long energy[2] = {0, 0};
     for (int pass = 0; pass < 2; pass++)
     {
-        synth_construct();
-        if (smf_load(smf, smf_len) != 0)
+        synth_construct(e);
+        if (smf_load(e, smf, smf_len) != 0)
         {
             fprintf(stderr, "selftest: smf_load failed\n");
             return 1;
         }
-        smf_set_loop(0);
+        smf_set_loop(e, 0);
 
-        if (smf_is_finished())
+        if (smf_is_finished(e))
         {
             fprintf(
                 stderr,
@@ -165,20 +155,20 @@ static int selftest(const char *dls_path, const char *smf_path)
         }
         for (;;)
         {
-            uint32_t n = smf_render(buf, CHUNK);
+            uint32_t n = smf_render(e, buf, CHUNK);
             for (uint32_t i = 0; i < n * 2; i++)
             {
                 long long s = buf[i];
                 energy[pass] += s < 0 ? -s : s;
             }
             frames[pass] += n;
-            if (n == 0 || smf_is_finished())
+            if (n == 0 || smf_is_finished(e))
                 break;
             /* 10 min cap */
             if (frames[pass] > (unsigned long) RENDER_RATE * 600UL)
                 break;
         }
-        if (!smf_is_finished())
+        if (!smf_is_finished(e))
         {
             fprintf(stderr, "FAIL pass %d: song never latched finished\n",
                     pass + 1);
@@ -202,13 +192,13 @@ static int selftest(const char *dls_path, const char *smf_path)
 
     /* Same latch, the other way a host clears it: rewinding in place rather
      * than reloading (what msgs_reset does for a looping <bg-sound>). */
-    smf_rewind();
-    if (smf_is_finished())
+    smf_rewind(e);
+    if (smf_is_finished(e))
     {
         fprintf(stderr, "FAIL: finished latch still set after smf_rewind\n");
         fail = 1;
     }
-    uint32_t n = smf_render(buf, CHUNK);
+    uint32_t n = smf_render(e, buf, CHUNK);
     long long e3 = 0;
     for (uint32_t i = 0; i < n * 2; i++)
     {
@@ -228,15 +218,15 @@ static int selftest(const char *dls_path, const char *smf_path)
      * render_frames, not smf_render: dispatching song events into a fixed-frame
      * window shifted it and cost one voice (47/48) in an earlier version of
      * this check. */
-    synth_construct();
+    synth_construct(e);
     for (int k = 0; k < 80; k++)
-        voice_note_on(0, 36 + (k % 60), 100);
+        voice_note_on(e, 0, 36 + (k % 60), 100);
     /* ~7.4s */
     for (int k = 0; k < 40 * RESAMPLE_FACTOR; k++)
-        render_frames(buf, CHUNK);
+        render_frames(e, buf, CHUNK);
     int surviving = 0;
     for (int k = 0; k < NUM_VOICES; k++)
-        if (g_voices[k].active)
+        if (e->voices[k].active)
             surviving++;
     if (surviving != 48)
     {
@@ -250,20 +240,20 @@ static int selftest(const char *dls_path, const char *smf_path)
     /* --jitter: the draw is reseeded per load, so a jittered song replays
      * exactly. */
     long long ej[2] = {0, 0};
-    smf_set_jitter_ms(22);
+    smf_set_jitter_ms(e, 22);
     for (int pass = 0; pass < 2; pass++)
     {
-        synth_construct();
-        smf_load(smf, smf_len);
-        smf_set_loop(0);
+        synth_construct(e);
+        smf_load(e, smf, smf_len);
+        smf_set_loop(e, 0);
         for (int k = 0; k < 64; k++)
         {
-            uint32_t m = smf_render(buf, CHUNK);
+            uint32_t m = smf_render(e, buf, CHUNK);
             for (uint32_t i = 0; i < m * 2; i++)
                 ej[pass] += buf[i] < 0 ? -buf[i] : buf[i];
         }
     }
-    smf_set_jitter_ms(0);
+    smf_set_jitter_ms(e, 0);
     if (ej[0] != ej[1] || ej[0] == 0)
     {
         fprintf(stderr,
@@ -272,8 +262,37 @@ static int selftest(const char *dls_path, const char *smf_path)
         fail = 1;
     }
 
+    /* Re-entrancy: A renders the song alone, then B renders it in turns with
+     * C, which plays a jittered copy; B must match A sample for sample */
+    Msgs *all[3] = {new_engine(smf_len), new_engine(smf_len),
+                    new_engine(smf_len)};
+    smf_set_jitter_ms(all[2], 22);
+    unsigned long long h[3] = {0, 0, 0};
+    for (int x = 0; x < 3; x++)
+    {
+        dls_load(all[x], dls, dls_len);
+        synth_construct(all[x]);
+        smf_load(all[x], smf, smf_len);
+    }
+    for (int k = 0; k < 3 * 256; k++)
+    {
+        /* k < 256: A; then B and C alternate */
+        int x = k < 256 ? 0 : 1 + (k & 1);
+        uint32_t m = smf_render(all[x], buf, CHUNK);
+        for (uint32_t i = 0; i < m * 2; i++)
+            h[x] = (h[x] ^ (uint16_t) buf[i]) * 1099511628211ull;
+    }
+    if (h[0] != h[1] || h[1] == h[2])
+    {
+        fprintf(stderr,
+                "FAIL: instances not independent -- A %016llx, B %016llx, "
+                "C %016llx\n",
+                h[0], h[1], h[2]);
+        fail = 1;
+    }
+
     printf("%s: pass1 %lu frames, pass2 %lu frames; rewind produced %u frames;"
-           " %d/48 voices survive saturation\n",
+           " %d/48 voices survive saturation; interleaved instances match\n",
            fail ? "FAIL" : "PASS", frames[0], frames[1], n, surviving);
     (void) e3;
     return fail;
@@ -282,9 +301,10 @@ static int selftest(const char *dls_path, const char *smf_path)
 int main(int argc, char **argv)
 {
     /* --jitter=MS: capture realism (smf_set_jitter_ms), off by default */
+    uint32_t jitter_ms = 0;
     if (argc > 1 && strncmp(argv[1], "--jitter=", 9) == 0)
     {
-        smf_set_jitter_ms((uint32_t) strtoul(argv[1] + 9, NULL, 10));
+        jitter_ms = (uint32_t) strtoul(argv[1] + 9, NULL, 10);
         argv[1] = argv[0];
         argv++;
         argc--;
@@ -308,40 +328,42 @@ int main(int argc, char **argv)
     unsigned long max_frames = strtoul(argv[4], NULL, 10);
     const char *out_path = argv[5];
 
-    tables_build();
-    synth_construct();
-    smf_set_loop(0);
-
-    int init_ret = 0;
+    uint32_t dls_len = 0, smf_len = 0;
+    unsigned char *dls = 0, *smf = 0;
     if (dls_path[0])
     {
-        uint32_t dls_len = 0;
-        unsigned char *dls = read_file(dls_path, &dls_len);
+        dls = read_file(dls_path, &dls_len);
         if (!dls)
         {
             emit(1, -1, 0x7fffffff, 0, 0, "could not read dls");
             return 2;
         }
-        /* referenced in place: never freed */
-        init_ret = dls_load(dls, dls_len);
     }
+    if (smf_path[0])
+        smf = read_file(smf_path, &smf_len);
+
+    Msgs *e = new_engine(smf_len);
+    smf_set_jitter_ms(e, jitter_ms);
+
+    int init_ret = 0;
+    /* referenced in place: never freed */
+    if (dls)
+        init_ret = dls_load(e, dls, dls_len);
 
     /* sentinel -> JSON null, as node_runner emits */
     int load_ret = 0x7fffffff;
     if (smf_path[0])
     {
-        uint32_t smf_len = 0;
-        unsigned char *smf = read_file(smf_path, &smf_len);
         if (!smf)
         {
             emit(1, init_ret, 0x7fffffff, 0, 0, "could not read smf");
             return 2;
         }
-        synth_construct();
-        load_ret = smf_load(smf, smf_len);
+        synth_construct(e);
+        load_ret = smf_load(e, smf, smf_len);
     }
 
-    smf_set_loop((int32_t) loops);
+    smf_set_loop(e, (int32_t) loops);
 
     FILE *out = fopen(out_path, "wb");
     if (!out)
@@ -357,7 +379,7 @@ int main(int argc, char **argv)
     int truncated = 0;
     for (;;)
     {
-        uint32_t n = smf_render(buf, CHUNK);
+        uint32_t n = smf_render(e, buf, CHUNK);
         if (n > 0)
         {
             if (fwrite(buf, 4, n, out) != n)
@@ -371,7 +393,7 @@ int main(int argc, char **argv)
         }
         if (n == 0)
             break;
-        if (smf_is_finished())
+        if (smf_is_finished(e))
             break;
         if (total >= max_frames)
         {

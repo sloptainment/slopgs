@@ -6,14 +6,7 @@
  * pointers when it reaches wvpl (0x1643a), decoding fmt/data/wsmp at an
  * unlocated later point; here a two-pass offset array decodes every wave
  * eagerly. */
-#include "dls.h"
-#include "rt.h"
-
-DlsCollection g_dls;
-
-/* Sticky malformed-chunk HRESULT (S2.2.2 error table); negative as int32, so
- * dls_load returns it directly. Any nonzero value aborts the whole load. */
-static int32_t parse_err;
+#include "engine.h"
 
 static uint32_t rd_u32(const uint8_t *p)
 {
@@ -54,7 +47,8 @@ static void wave_defaults(Wave *w)
     w->no_loop = 1;
 }
 
-static void parse_wave_contents(const uint8_t *content, uint32_t clen, Wave *w)
+static void parse_wave_contents(Msgs *e, const uint8_t *content, uint32_t clen,
+                                Wave *w)
 {
     const uint8_t *p = content;
     const uint8_t *end = content + clen;
@@ -79,11 +73,12 @@ static void parse_wave_contents(const uint8_t *content, uint32_t clen, Wave *w)
                 uint32_t rate = rd_u32(cdata + 4);
                 uint16_t bps = rd_u16(cdata + 0xe);
                 if (have_fmt || (bps != 8 && bps != 16))
-                    parse_err = (int32_t) 0x80041389; /* duplicate fmt, D-27 */
+                    e->parse_err =
+                        (int32_t) 0x80041389; /* duplicate fmt, D-27 */
                 else if (fmt_tag != 1)
-                    parse_err = (int32_t) 0x8004138a; /* not PCM, D-26 */
+                    e->parse_err = (int32_t) 0x8004138a; /* not PCM, D-26 */
                 else if (nchan != 1)
-                    parse_err = (int32_t) 0x8004138b; /* not mono, D-26 */
+                    e->parse_err = (int32_t) 0x8004138b; /* not mono, D-26 */
                 else
                 {
                     w->sample_rate = rate;
@@ -95,7 +90,7 @@ static void parse_wave_contents(const uint8_t *content, uint32_t clen, Wave *w)
         else if (fourcc_is(p, 'd', 'a', 't', 'a'))
         {
             if (!have_fmt)
-                parse_err = (int32_t) 0x80041389; /* data before fmt, D-27 */
+                e->parse_err = (int32_t) 0x80041389; /* data before fmt, D-27 */
             else
             {
                 if (bits_per_sample == 16)
@@ -111,7 +106,12 @@ static void parse_wave_contents(const uint8_t *content, uint32_t clen, Wave *w)
                      * render only implements the 16-bit fetch tap. Same values
                      * as the driver's byte+0x80 then *256 (0x1554e). */
                     uint32_t n = size;
-                    int16_t *buf = (int16_t *) rt_alloc(n * 2);
+                    int16_t *buf = (int16_t *) rt_alloc(&e->arena, n * 2);
+                    if (!buf)
+                    {
+                        e->parse_err = MSGS_ENOMEM;
+                        return;
+                    }
                     for (uint32_t i = 0; i < n; i++)
                     {
                         int v = (int) cdata[i] - 128;
@@ -132,7 +132,7 @@ static void parse_wave_contents(const uint8_t *content, uint32_t clen, Wave *w)
                 (nloops &&
                  (size < WSMP_MIN_SIZE + 0x10 * (uint64_t) nloops ||
                   rd_u32(cdata + 0x14) < 0x10 || rd_u32(cdata + 0x18) != 0)))
-                parse_err = (int32_t) 0x80041389;
+                e->parse_err = (int32_t) 0x80041389;
             else
             {
                 w->unity_note = cdata[4]; /* low byte only, S2.3.4 */
@@ -209,7 +209,7 @@ static int16_t clamp_cents(int32_t v)
 }
 
 /* Applies one art1 CONNECTIONLIST chunk's connection blocks onto `a`. */
-static void apply_art1(const uint8_t *cdata, uint32_t csize, Artic *a)
+static void apply_art1(Msgs *e, const uint8_t *cdata, uint32_t csize, Artic *a)
 {
     if (csize < 8)
         return;
@@ -217,7 +217,7 @@ static void apply_art1(const uint8_t *cdata, uint32_t csize, Artic *a)
     uint32_t n_blocks = rd_u32(cdata + 4);
     if (cb_size < 8 || csize != cb_size + 12 * (uint64_t) n_blocks)
     {
-        parse_err = (int32_t) 0x8004138c; /* 0x157ef, 0x15ada */
+        e->parse_err = (int32_t) 0x8004138c; /* 0x157ef, 0x15ada */
         return;
     }
     /* array unconditionally at chunk_data+8, whatever cbSize says
@@ -370,9 +370,14 @@ static void region_defaults(Region *r)
 }
 
 /* Parses one 'rgn '/'rgn2' body. Returns the built Region. */
-static Region *parse_region(const uint8_t *content, uint32_t clen)
+static Region *parse_region(Msgs *e, const uint8_t *content, uint32_t clen)
 {
-    Region *r = (Region *) rt_alloc(sizeof(Region));
+    Region *r = (Region *) rt_alloc(&e->arena, sizeof(Region));
+    if (!r)
+    {
+        e->parse_err = MSGS_ENOMEM;
+        return 0;
+    }
     region_defaults(r);
 
     const uint8_t *p = content;
@@ -394,7 +399,7 @@ static Region *parse_region(const uint8_t *content, uint32_t clen)
                 r->key_group = cdata[0xa];
             }
             else
-                parse_err = (int32_t) 0x8004138d; /* S2.2.2, D-23 */
+                e->parse_err = (int32_t) 0x8004138d; /* S2.2.2, D-23 */
         }
         else if (fourcc_is(p, 'w', 's', 'm', 'p'))
         {
@@ -404,7 +409,7 @@ static Region *parse_region(const uint8_t *content, uint32_t clen)
             if (size < WSMP_MIN_SIZE ||
                 (nloops && (size < WSMP_MIN_SIZE + 0x10 * (uint64_t) nloops ||
                             nloops > 1 || rd_u32(cdata + 0x14) < 0x10)))
-                parse_err = (int32_t) 0x8004138d;
+                e->parse_err = (int32_t) 0x8004138d;
             else
             {
                 r->has_own_wsmp = 1;
@@ -425,9 +430,9 @@ static Region *parse_region(const uint8_t *content, uint32_t clen)
         else if (fourcc_is(p, 'w', 'l', 'n', 'k'))
         {
             if (size < 0xc)
-                parse_err = (int32_t) 0x8004138e; /* 0x15c67 */
+                e->parse_err = (int32_t) 0x8004138e; /* 0x15c67 */
             else if (rd_u32(cdata + 4) != WLNK_CHANNEL_LEFT)
-                parse_err = (int32_t) 0x8004138b; /* 0x15c6e */
+                e->parse_err = (int32_t) 0x8004138b; /* 0x15c6e */
             else
                 r->wave_pool_index = rd_u16(cdata + 8);
         }
@@ -435,7 +440,12 @@ static Region *parse_region(const uint8_t *content, uint32_t clen)
         {
             if (size >= 4 && fourcc_is(cdata, 'l', 'a', 'r', 't'))
             {
-                Artic *a = (Artic *) rt_alloc(sizeof(Artic));
+                Artic *a = (Artic *) rt_alloc(&e->arena, sizeof(Artic));
+                if (!a)
+                {
+                    e->parse_err = MSGS_ENOMEM;
+                    return r;
+                }
                 artic_defaults(a);
                 const uint8_t *lp = cdata + 4;
                 const uint8_t *lend = cdata + size;
@@ -447,7 +457,7 @@ static Region *parse_region(const uint8_t *content, uint32_t clen)
                         break;
                     if (fourcc_is(lp, 'a', 'r', 't', '1'))
                     {
-                        apply_art1(ldata, lsize, a);
+                        apply_art1(e, ldata, lsize, a);
                     }
                     lp = ldata + lsize;
                 }
@@ -460,9 +470,15 @@ static Region *parse_region(const uint8_t *content, uint32_t clen)
     return r;
 }
 
-static Instrument *parse_instrument(const uint8_t *content, uint32_t clen)
+static Instrument *parse_instrument(Msgs *e, const uint8_t *content,
+                                    uint32_t clen)
 {
-    Instrument *inst = (Instrument *) rt_alloc(sizeof(Instrument));
+    Instrument *inst = (Instrument *) rt_alloc(&e->arena, sizeof(Instrument));
+    if (!inst)
+    {
+        e->parse_err = MSGS_ENOMEM;
+        return 0;
+    }
     inst->next = 0;
     inst->first_region = 0;
     inst->locale = 0;
@@ -494,7 +510,7 @@ static Instrument *parse_instrument(const uint8_t *content, uint32_t clen)
                 inst->locale = locale;
             }
             else
-                parse_err = (int32_t) 0x8004138f; /* S2.2.2, D-23 */
+                e->parse_err = (int32_t) 0x8004138f; /* S2.2.2, D-23 */
         }
         else if (fourcc_is(p, 'L', 'I', 'S', 'T'))
         {
@@ -512,7 +528,7 @@ static Instrument *parse_instrument(const uint8_t *content, uint32_t clen)
                         (fourcc_is(ldata, 'r', 'g', 'n', ' ') ||
                          fourcc_is(ldata, 'r', 'g', 'n', '2')))
                     {
-                        Region *r = parse_region(ldata + 4, lsize - 4);
+                        Region *r = parse_region(e, ldata + 4, lsize - 4);
                         if (region_tail)
                             region_tail->next = r;
                         else
@@ -525,7 +541,12 @@ static Instrument *parse_instrument(const uint8_t *content, uint32_t clen)
             }
             else if (size >= 4 && fourcc_is(cdata, 'l', 'a', 'r', 't'))
             {
-                Artic *a = (Artic *) rt_alloc(sizeof(Artic));
+                Artic *a = (Artic *) rt_alloc(&e->arena, sizeof(Artic));
+                if (!a)
+                {
+                    e->parse_err = MSGS_ENOMEM;
+                    return inst;
+                }
                 artic_defaults(a);
                 const uint8_t *lp = cdata + 4;
                 const uint8_t *lend = cdata + size;
@@ -537,7 +558,7 @@ static Instrument *parse_instrument(const uint8_t *content, uint32_t clen)
                         break;
                     if (fourcc_is(lp, 'a', 'r', 't', '1'))
                     {
-                        apply_art1(ldata, lsize, a);
+                        apply_art1(e, ldata, lsize, a);
                     }
                     lp = ldata + lsize;
                 }
@@ -560,13 +581,13 @@ static Instrument *parse_instrument(const uint8_t *content, uint32_t clen)
     return inst;
 }
 
-int dls_load(const uint8_t *data, uint32_t len)
+static int dls_parse(Msgs *e, const uint8_t *data, uint32_t len)
 {
-    g_dls.first_instrument = 0;
-    g_dls.wave_array = 0;
-    g_dls.wave_count = 0;
-    g_dls.valid = 0;
-    parse_err = 0;
+    e->dls.first_instrument = 0;
+    e->dls.wave_array = 0;
+    e->dls.wave_count = 0;
+    e->dls.valid = 0;
+    e->parse_err = 0;
 
     if (len < 12)
         return -1;
@@ -634,11 +655,11 @@ int dls_load(const uint8_t *data, uint32_t len)
                         fourcc_is(ldata, 'i', 'n', 's', ' '))
                     {
                         Instrument *inst =
-                            parse_instrument(ldata + 4, lsize - 4);
+                            parse_instrument(e, ldata + 4, lsize - 4);
                         if (inst_tail)
                             inst_tail->next = inst;
                         else
-                            g_dls.first_instrument = inst;
+                            e->dls.first_instrument = inst;
                         inst_tail = inst;
                     }
                     lp = ldata + lsize;
@@ -649,25 +670,29 @@ int dls_load(const uint8_t *data, uint32_t len)
         else if (fourcc_is(p, 'c', 'o', 'l', 'h'))
         {
             if (size < 4)
-                parse_err = (int32_t) 0x80041392; /* S2.2.2, D-23 */
+                e->parse_err = (int32_t) 0x80041392; /* S2.2.2, D-23 */
         }
         /* vers, msyn, edit, INFO: skipped */
         p = cdata + size;
     }
 
     /* S2.2.2: any malformed chunk aborts the whole load. */
-    if (parse_err)
-        return (int) parse_err;
+    if (e->parse_err)
+        return (int) e->parse_err;
 
     /* Post-pass: resolve each region's wave via wlnk.ulTableIndex (0x15dde);
      * see the file header for the mechanism difference. */
     if (ptbl_offsets_raw && wvpl_data_base && ptbl_cues > 0)
     {
-        Wave **arr = (Wave **) rt_alloc(ptbl_cues * sizeof(Wave *));
+        Wave **arr = (Wave **) rt_alloc(&e->arena, ptbl_cues * sizeof(Wave *));
+        if (!arr)
+            return MSGS_ENOMEM;
         for (uint32_t i = 0; i < ptbl_cues; i++)
         {
             uint32_t rel_off = rd_u32(ptbl_offsets_raw + i * 4);
-            Wave *w = (Wave *) rt_alloc(sizeof(Wave));
+            Wave *w = (Wave *) rt_alloc(&e->arena, sizeof(Wave));
+            if (!w)
+                return MSGS_ENOMEM;
             wave_defaults(w);
             if ((uint64_t) rel_off + 8 <= wvpl_data_size)
             {
@@ -681,24 +706,25 @@ int dls_load(const uint8_t *data, uint32_t len)
                         (fourcc_is(wdata, 'w', 'a', 'v', 'e') ||
                          fourcc_is(wdata, 'W', 'A', 'V', 'E')))
                     {
-                        parse_wave_contents(wdata + 4, wsize - 4, w);
+                        parse_wave_contents(e, wdata + 4, wsize - 4, w);
                     }
                 }
             }
             arr[i] = w;
         }
-        if (parse_err)
-            return (int) parse_err;
-        g_dls.wave_array = arr;
-        g_dls.wave_count = ptbl_cues;
+        if (e->parse_err)
+            return (int) e->parse_err;
+        e->dls.wave_array = arr;
+        e->dls.wave_count = ptbl_cues;
 
-        for (Instrument *inst = g_dls.first_instrument; inst; inst = inst->next)
+        for (Instrument *inst = e->dls.first_instrument; inst;
+             inst = inst->next)
         {
             for (Region *r = inst->first_region; r; r = r->next)
             {
-                if (r->wave_pool_index < g_dls.wave_count)
+                if (r->wave_pool_index < e->dls.wave_count)
                 {
-                    r->wave = g_dls.wave_array[r->wave_pool_index];
+                    r->wave = e->dls.wave_array[r->wave_pool_index];
                 }
                 /* DLS-1 wsmp inheritance: never exercised by gm.dls (all 1498
                  * regions carry their own wsmp); the driver's merge is
@@ -710,12 +736,23 @@ int dls_load(const uint8_t *data, uint32_t len)
                 }
             }
         }
-        g_dls.valid = 1;
+        e->dls.valid = 1;
         return 0;
     }
 
-    g_dls.valid = 0;
+    e->dls.valid = 0;
     return -2;
+}
+
+/* The DLS takes the arena's front and songs what follows, so a reload
+ * overwrites the song too */
+int dls_load(Msgs *e, const uint8_t *data, uint32_t len)
+{
+    e->arena.used = 0;
+    e->smf.loaded = 0;
+    int rc = dls_parse(e, data, len);
+    e->song_mark = e->arena.used;
+    return rc;
 }
 
 /* Instrument/region lookup */
@@ -733,9 +770,9 @@ static Region *find_region_for_note(Instrument *inst, uint8_t note)
 /* The key-range walk is part of FindInstrument itself [A:0x147b7]: a kit with
  * a hole in its key map (gm.dls's SFX kit, 39-84) falls through to the next
  * tier for a missing key instead of dropping the note. */
-static Instrument *find_instrument_exact(uint32_t locale, uint8_t note)
+static Instrument *find_instrument_exact(Msgs *e, uint32_t locale, uint8_t note)
 {
-    for (Instrument *inst = g_dls.first_instrument; inst; inst = inst->next)
+    for (Instrument *inst = e->dls.first_instrument; inst; inst = inst->next)
     {
         if (inst->locale == locale && inst->region_count > 0 &&
             find_region_for_note(inst, note))
@@ -744,24 +781,25 @@ static Instrument *find_instrument_exact(uint32_t locale, uint8_t note)
     return 0;
 }
 
-Region *dls_find_region(uint32_t locale, uint8_t note, uint32_t *resolved)
+Region *dls_find_region(Msgs *e, uint32_t locale, uint8_t note,
+                        uint32_t *resolved)
 {
-    if (!g_dls.valid)
+    if (!e->dls.valid)
         return 0;
-    Instrument *inst = find_instrument_exact(locale, note);
+    Instrument *inst = find_instrument_exact(e, locale, note);
     if (!inst)
     {
         if (locale & 0x80000000u)
         {
             locale = 0x80000000u;
-            inst = find_instrument_exact(locale, note);
+            inst = find_instrument_exact(e, locale, note);
         }
         if (!inst)
         {
             if (locale == 0x80000000u)
                 return 0;
             locale &= 0x7f;
-            inst = find_instrument_exact(locale, note);
+            inst = find_instrument_exact(e, locale, note);
             if (!inst)
                 return 0;
         }

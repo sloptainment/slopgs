@@ -86,7 +86,7 @@ inter-case gaps all count.
 Freestanding C: no libc, libm, malloc or stdio. `rt.c` supplies
 `memcpy`/`memset`/`pow`/`log10`/`sqrt`/`sin` and a bump allocator; plain
 IEEE-754 `double` is all the arithmetic needs. `gm.dls` is parsed in place
-and sample data is referenced, never copied. The ABI in `msgs.h` is fixed.
+and sample data is referenced, never copied. `msgs.h` is the public API.
 `smf.c` has no counterpart in the driver. Target-specific code (`wasm.c`,
 `cli.c`) lives in `src/`.
 

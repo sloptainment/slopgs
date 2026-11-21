@@ -1,6 +1,7 @@
 #ifndef SYNTH_H
 #define SYNTH_H
 
+#include "msgs.h"
 #include <stdint.h>
 
 typedef struct Channel
@@ -27,20 +28,13 @@ typedef struct Channel
     int8_t scale_tuning[12];
 } Channel;
 
-extern Channel g_channels[16];
-/* gates CC0/CC32 storage and the per-part DT1 handlers (0x1341e, 0x13492,
- * 0x1376e, 0x137a2, 0x137b7) */
-extern uint8_t g_gs_mode;
-/* master volume attenuation, hundredths of a dB */
-extern int32_t g_master_vol_hdb;
-
-void synth_reset(void);
+void synth_reset(Msgs *e);
 /* Device construction/open: power-on defaults + synth_reset() body;
  * MIDI-level resets don't touch RPN0/RPN-select/sustain (unit.c S4.6.4). */
-void synth_construct(void);
+void synth_construct(Msgs *e);
 /* program|bankLSB<<7|bankMSB<<14|drum<<31 */
-uint32_t synth_channel_locale(int ch);
-int32_t synth_pitch_bend_cents(int ch);
+uint32_t synth_channel_locale(Msgs *e, int ch);
+int32_t synth_pitch_bend_cents(Msgs *e, int ch);
 
 /* the live controllers a voice reads at its segment ends */
 enum
@@ -52,20 +46,38 @@ enum
     CTL_BEND,
     CTL_COUNT
 };
+/* RecordMIDI queues each live controller with its event time (0x16bae);
+ * a voice reads the value due at its segment end (0x16c50) and Mix folds
+ * every node older than its end into the current value (0x16b46). Here the
+ * Channel fields hold the newest value and the queue what came before. */
+#define CTL_QUEUE 64
+
+typedef struct CtlQueue
+{
+    /* value before q[0]; n pending nodes in time order */
+    uint16_t cur;
+    uint8_t n;
+    struct
+    {
+        uint64_t t;
+        uint16_t v;
+    } q[CTL_QUEUE];
+} CtlQueue;
+
 /* the controller's value at time t (RENDER_RATE frames) [A:0x16c50] */
-uint32_t synth_ctl_at(int ch, int ctl, uint64_t t);
-int32_t synth_pitch_bend_cents_at(int ch, uint64_t t);
+uint32_t synth_ctl_at(Msgs *e, int ch, int ctl, uint64_t t);
+int32_t synth_pitch_bend_cents_at(Msgs *e, int ch, uint64_t t);
 /* Mix's end: fold what is older than `end` into the current value */
-void synth_ctl_fold(uint64_t end);
+void synth_ctl_fold(Msgs *e, uint64_t end);
 
 /* One short message with an explicit status byte; running-status expansion is
  * the caller's job. 0xFF is System Reset. */
-void synth_midi(uint32_t status, uint32_t d1, uint32_t d2);
+void synth_midi(Msgs *e, uint32_t status, uint32_t d1, uint32_t d2);
 
 /* A service call ran: Program Changes posted so far are folded into the
  * locale queue default (0x16b46) and a later System Reset keeps them. Called
  * by render_frames. */
-void synth_service_tick(void);
+void synth_service_tick(Msgs *e);
 
 /* Internal-only SysEx handler, not public ABI: msgs_midi's 3-byte signature
  * can't carry a SysEx message, and the ABI stays fixed. The driver has no
@@ -73,6 +85,6 @@ void synth_service_tick(void);
  * MIDI events and sends 0xF0 to 0x1367a, anything else to 0x131c0. In-tree
  * hosts that link the engine (src/vsti) may call this directly.
  * buf points right after the leading 0xF0. */
-void synth_sysex(const uint8_t *buf, uint32_t len);
+void synth_sysex(Msgs *e, const uint8_t *buf, uint32_t len);
 
 #endif /* SYNTH_H */

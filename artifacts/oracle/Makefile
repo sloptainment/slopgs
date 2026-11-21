@@ -21,7 +21,7 @@ LDFLAGS := -m32 -nostdlib -static -no-pie
 
 SRCS := oracle.c $(ROOT)/src/engine/smf.c
 
-oracle: $(SRCS) $(ROOT)/src/engine/smf.h
+oracle: $(SRCS) $(wildcard $(ROOT)/src/engine/*.h)
 	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $(SRCS)
 
 clean:

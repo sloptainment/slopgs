@@ -1,6 +1,7 @@
-/* msgs.h -- public ABI for the freestanding wasm32 MIDI synth.
- * Fixed ABI shared by the wasm and native builds; pointer arguments are byte
- * offsets into the engine's memory. Do not change signatures. */
+/* msgs.h -- public ABI, shared by the wasm and native builds. Every instance
+ * lives in one caller-supplied block and shares nothing with another, so any
+ * number may run at once, one thread each. In the wasm build a pointer is an
+ * offset into the module's linear memory. */
 #ifndef MSGS_H
 #define MSGS_H
 
@@ -11,23 +12,37 @@ extern "C"
 {
 #endif
 
-    uint32_t msgs_abi_version(void); /* returns 1 */
-    /* bytes of linear memory required/used */
-    uint32_t msgs_mem_size(void);
-    /* bump allocator; returns offset into linear memory */
-    uint32_t msgs_alloc(uint32_t nbytes);
-    /* host places gm.dls first; 0 = OK */
-    int32_t msgs_init(uint32_t dls_ptr, uint32_t dls_len);
+#ifdef __wasm__
+#define MSGS_API __attribute__((visibility("default")))
+#else
+#define MSGS_API
+#endif
+
+/* the instance's memory block is full: give msgs_create more */
+#define MSGS_ENOMEM (-3)
+
+    typedef struct Msgs Msgs;
+
+    MSGS_API uint32_t msgs_abi_version(void); /* returns 2 */
+    /* bytes msgs_create needs to load gm.dls and any SMF up to max_smf_len */
+    MSGS_API uint32_t msgs_size(uint32_t max_smf_len);
+    /* mem: 8-byte aligned, outlives the instance; 0 if len is too small */
+    MSGS_API Msgs *msgs_create(void *mem, uint32_t len);
+    /* dls stays referenced, never copied; forgets any loaded song. 0 = OK */
+    MSGS_API int32_t msgs_init(Msgs *e, const uint8_t *dls, uint32_t dls_len);
     /* channels+voices to defaults AND rewinds the loaded song */
-    void msgs_reset(void);
-    int32_t msgs_load_smf(uint32_t smf_ptr, uint32_t smf_len); /* 0 = OK */
+    MSGS_API void msgs_reset(Msgs *e);
+    /* smf stays referenced; replaces the previous song. 0 = OK */
+    MSGS_API int32_t msgs_load_smf(Msgs *e, const uint8_t *smf,
+                                   uint32_t smf_len);
     /* -1 = infinite, 0 = play once */
-    void msgs_set_loop(int32_t loops);
-    /* stereo interleaved int16 @22050 Hz */
-    uint32_t msgs_render(uint32_t out_ptr, uint32_t frames);
-    int32_t msgs_is_finished(void);
+    MSGS_API void msgs_set_loop(Msgs *e, int32_t loops);
+    /* stereo interleaved int16 @ msgs_sample_rate() */
+    MSGS_API uint32_t msgs_render(Msgs *e, int16_t *out, uint32_t frames);
+    MSGS_API int32_t msgs_is_finished(Msgs *e);
     /* inject one short message immediately */
-    void msgs_midi(uint32_t status, uint32_t d1, uint32_t d2);
+    MSGS_API void msgs_midi(Msgs *e, uint32_t status, uint32_t d1, uint32_t d2);
+    MSGS_API uint32_t msgs_sample_rate(void);
 
 #ifdef __cplusplus
 }

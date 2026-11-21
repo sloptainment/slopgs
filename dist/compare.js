@@ -62,6 +62,21 @@ const SlopgsCompare = (() => {
   // -----------------------------------------------------------------------
   let synthPromise = null;
 
+  // Points synth.e at an instance with room for an SMF of smfLen bytes. A
+  // bigger song gets a bigger instance; msgs_alloc never frees, so the old
+  // block stays behind.
+  function ensureCapacity(synth, smfLen) {
+    if (smfLen <= synth.cap) return;
+    const { exp } = synth;
+    const size = exp.msgs_size(smfLen) >>> 0;
+    const e = exp.msgs_create(exp.msgs_alloc(size), size) >>> 0;
+    if (!e) throw new Error(`msgs_create failed (${size} bytes)`);
+    const initRet = exp.msgs_init(e, synth.dlsPtr, synth.dlsLen) | 0;
+    if (initRet !== 0) throw new Error(`msgs_init failed (code ${initRet})`);
+    synth.e = e;
+    synth.cap = smfLen;
+  }
+
   function loadSynth() {
     if (synthPromise) return synthPromise;
     synthPromise = (async () => {
@@ -94,22 +109,22 @@ const SlopgsCompare = (() => {
 
       const dlsPtr = exp.msgs_alloc(dlsBytes.length);
       new Uint8Array(exp.memory.buffer, dlsPtr, dlsBytes.length).set(dlsBytes);
-      const initRet = exp.msgs_init(dlsPtr, dlsBytes.length) | 0;
-      if (initRet !== 0) throw new Error(`msgs_init failed (code ${initRet})`);
 
       // Reused scratch buffer for every render() call across every item --
       // msgs_alloc never frees, so allocating fresh per item would grow
       // wasm memory forever across a page session (see rt_alloc's ponytail
       // note in src/wasm.c).
       const outPtr = exp.msgs_alloc(RENDER_CHUNK_FRAMES * 4); // stereo int16
-      return { exp, outPtr };
+      const synth = { exp, outPtr, dlsPtr, dlsLen: dlsBytes.length, e: 0, cap: -1 };
+      ensureCapacity(synth, 0);
+      return synth;
     })();
     return synthPromise;
   }
 
-  // Renders one MIDI file to completion. The ABI has no session handle (one
-  // global synth state) so items must be rendered one at a time -- callers
-  // must not call this concurrently for two items.
+  // Renders one MIDI file to completion. Every item shares one instance, so
+  // items must be rendered one at a time -- callers must not call this
+  // concurrently for two items.
   async function renderMidi(midiUrl) {
     const resp = await fetch(midiUrl);
     if (!resp.ok) throw new Error(`HTTP ${resp.status} fetching ${midiUrl}`);
@@ -120,19 +135,21 @@ const SlopgsCompare = (() => {
   // Same render, from bytes already in hand (a File, not a fetch) -- what
   // play2.html uses for a locally-picked .mid.
   async function renderMidiBytes(smfBytes) {
-    const { exp, outPtr } = await loadSynth();
-    exp.msgs_reset();
+    const synth = await loadSynth();
+    ensureCapacity(synth, smfBytes.length);
+    const { exp, outPtr, e } = synth;
+    exp.msgs_reset(e);
     const ptr = exp.msgs_alloc(smfBytes.length);
     new Uint8Array(exp.memory.buffer, ptr, smfBytes.length).set(smfBytes);
-    const loadRet = exp.msgs_load_smf(ptr, smfBytes.length) | 0;
+    const loadRet = exp.msgs_load_smf(e, ptr, smfBytes.length) | 0;
     if (loadRet !== 0) throw new Error(`msgs_load_smf failed (code ${loadRet})`);
-    exp.msgs_set_loop(0);
+    exp.msgs_set_loop(e, 0);
 
     const maxFrames = MAX_RENDER_SECONDS * SYNTH_RATE;
     const chunks = [];
     let total = 0;
     while (total < maxFrames) {
-      const n = exp.msgs_render(outPtr, RENDER_CHUNK_FRAMES) >>> 0;
+      const n = exp.msgs_render(e, outPtr, RENDER_CHUNK_FRAMES) >>> 0;
       if (n > 0) {
         // Re-view memory.buffer every time: memory.grow() (possible inside
         // msgs_render, e.g. voice/event growth) detaches prior views.
@@ -140,7 +157,7 @@ const SlopgsCompare = (() => {
         chunks.push(pcm.slice()); // copy out before the next render() call reuses outPtr
         total += n;
       }
-      if (n === 0 || exp.msgs_is_finished()) break;
+      if (n === 0 || exp.msgs_is_finished(e)) break;
     }
 
     const left = new Float32Array(total);

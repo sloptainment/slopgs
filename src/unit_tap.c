@@ -178,26 +178,3 @@ int tap_done(void)
     fflush(stdout);
     return g_fail ? 1 : 0;
 }
-
-/* ---------------------------------------------------------------------- */
-/* rt_alloc/rt_mem_size: per-interface allocator (rt.h) that cli.c and
- * wasm.c each provide and we don't link; mirrors cli.c's malloc-backed one
- * since the engine (smf.c, dls.c) calls rt_alloc directly. */
-#include "engine/rt.h"
-
-static uint32_t g_rt_total = 0;
-
-void *rt_alloc(uint32_t nbytes)
-{
-    nbytes = (nbytes + 7u) & ~7u;
-    void *p = calloc(1, nbytes ? nbytes : 8);
-    if (!p)
-    {
-        fprintf(stderr, "msgs-unit: out of memory (%u bytes)\n", nbytes);
-        exit(3);
-    }
-    g_rt_total += nbytes;
-    return p;
-}
-
-uint32_t rt_mem_size(void) { return g_rt_total; }

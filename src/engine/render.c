@@ -2,8 +2,7 @@
  * saturating accumulate into int16, loop-end by one subtraction (live MMX
  * variant 0x1a360). */
 #include "render.h"
-#include "synth.h"
-#include "voice.h"
+#include "engine.h"
 
 static int32_t abs_i32(int32_t x) { return x < 0 ? -x : x; }
 
@@ -24,8 +23,8 @@ static int16_t sat_add_i16(int32_t a, int32_t b)
     return (int16_t) s;
 }
 
-/* t: the g_now frame out[0] lands on */
-static void render_voice(Voice *v, int16_t *out, uint32_t frames,
+/* t: the e->now frame out[0] lands on */
+static void render_voice(Msgs *e, Voice *v, int16_t *out, uint32_t frames,
                          uint32_t block_left, uint64_t t)
 {
     /* clip the voice into this call the way the driver clips it: a note-on
@@ -51,12 +50,12 @@ static void render_voice(Voice *v, int16_t *out, uint32_t frames,
            with EG2 at full depth; with an attack, EG2 is 0 here anyway */
         v->starting = 0;
         v->eg2_cents = voice_eg2_cents(v, 0);
-        voice_update_pitch_at(v, t);
+        voice_update_pitch_at(e, v, t);
         v->phase_step = v->phase_step_target;
-        voice_update_gain_at(v, t);
+        voice_update_gain_at(e, v, t);
         int32_t env_hdb = voice_env_hdb(v->env_level);
-        v->amp_l = voice_amp(v->atten_l_hdb, env_hdb);
-        v->amp_r = voice_amp(v->atten_r_hdb, env_hdb);
+        v->amp_l = voice_amp(e, v->atten_l_hdb, env_hdb);
+        v->amp_r = voice_amp(e, v->atten_r_hdb, env_hdb);
     }
     uint32_t sample_end_q12 = (uint32_t) v->sample_end_s * PHASE_ONE;
     uint32_t loop_len_q12 = (uint32_t) v->loop_len_s * PHASE_ONE;
@@ -82,8 +81,8 @@ static void render_voice(Voice *v, int16_t *out, uint32_t frames,
             v->phase_step = (uint32_t) ((int32_t) v->phase_step + v->step_left);
             voice_eg2_segment(v, seg);
             v->lfo_elapsed = v->eg2_t + seg;
-            voice_update_pitch_at(v, end);
-            voice_update_gain_at(v, end);
+            voice_update_pitch_at(e, v, end);
+            voice_update_gain_at(e, v, end);
             int32_t share =
                 (int32_t) v->phase_step_target - (int32_t) v->phase_step;
 
@@ -93,7 +92,7 @@ static void render_voice(Voice *v, int16_t *out, uint32_t frames,
                 // a note-off releases at its own frame [A:0x19a6f]
                 if (t + i + k == v->release_at)
                     voice_release_due(v, v->eg2_t + k);
-                env_end = voice_step_envelope(v);
+                env_end = voice_step_envelope(e, v);
             }
             v->amp_retire = !v->active;
             v->active = 1;
@@ -103,9 +102,9 @@ static void render_voice(Voice *v, int16_t *out, uint32_t frames,
             /* steps this segment takes on the BASE_RATE grid */
             uint32_t steps = (seg + RESAMPLE_FACTOR - 1) / RESAMPLE_FACTOR;
             int32_t env_hdb = voice_env_hdb(env_end);
-            v->amp_step_l = (voice_amp(v->atten_l_hdb, env_hdb) - v->amp_l) /
+            v->amp_step_l = (voice_amp(e, v->atten_l_hdb, env_hdb) - v->amp_l) /
                             (double) steps;
-            v->amp_step_r = (voice_amp(v->atten_r_hdb, env_hdb) - v->amp_r) /
+            v->amp_step_r = (voice_amp(e, v->atten_r_hdb, env_hdb) - v->amp_r) /
                             (double) steps;
             v->amp_sub = 0;
             v->amp_left = seg;
@@ -192,14 +191,14 @@ static void render_voice(Voice *v, int16_t *out, uint32_t frames,
     }
 }
 
-void render_frames(int16_t *out, uint32_t frames)
+void render_frames(Msgs *e, int16_t *out, uint32_t frames)
 {
     for (uint32_t i = 0; i < frames * 2; i++)
         out[i] = 0;
     /* reserve top-up runs once per wall-clock service tick, NOT once per
      * render_frames() call: smf.c splits at every event (~800/s on
      * HueArme-Weekend), which cascaded Branch B into silence */
-    voice_topup_tick(frames);
+    voice_topup_tick(e, frames);
     /* the driver's active list takes new voices at the head
      * (0x12ffe-0x1300c) and Mix walks it from there (0x130bc), so
      * saturation sees the newest voice first: age descending, ties by
@@ -209,7 +208,7 @@ void render_frames(int16_t *out, uint32_t frames)
     for (int vi = 0; vi < NUM_VOICES; vi++)
     {
         int j = n++;
-        while (j > 0 && g_voices[order[j - 1]].age < g_voices[vi].age)
+        while (j > 0 && e->voices[order[j - 1]].age < e->voices[vi].age)
         {
             order[j] = order[j - 1];
             j--;
@@ -218,12 +217,12 @@ void render_frames(int16_t *out, uint32_t frames)
     }
     for (int oi = 0; oi < NUM_VOICES; oi++)
     {
-        Voice *v = &g_voices[order[oi]];
+        Voice *v = &e->voices[order[oi]];
         if (v->active && v->wave)
-            render_voice(v, out, frames, frames, g_now);
+            render_voice(e, v, out, frames, frames, e->now);
     }
-    g_now += frames;
+    e->now += frames;
     // what is older than this call's end is folded (0x1310a-0x13180)
-    synth_ctl_fold(g_now);
-    synth_service_tick();
+    synth_ctl_fold(e, e->now);
+    synth_service_tick(e);
 }

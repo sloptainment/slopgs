@@ -47,7 +47,8 @@
   const TOPUP_INTERVAL_MS = 200;
 
   const REQUIRED_EXPORTS = [
-    "msgs_abi_version", "msgs_mem_size", "msgs_alloc", "msgs_init",
+    "msgs_abi_version", "msgs_mem_size", "msgs_alloc", "msgs_size",
+    "msgs_create", "msgs_init",
     "msgs_reset", "msgs_load_smf", "msgs_set_loop", "msgs_render",
     "msgs_is_finished", "msgs_midi", "memory",
   ];
@@ -56,7 +57,7 @@
   // which only dedupes fetches within one page's lifetime). Bump this name
   // whenever msgs.wasm/gm.dls change content at the same URL, since nothing
   // else here invalidates a stale cached entry.
-  const ASSET_CACHE_NAME = "slopgs-20260727";
+  const ASSET_CACHE_NAME = "slopgs-20261121";
 
   async function cachedFetch(url) {
     if (typeof caches !== "object") return fetch(url); // no Cache Storage (e.g. insecure context)
@@ -70,13 +71,27 @@
 
   // ---------------------------------------------------------------------
   // Singleton synth: one wasm instance, one gm.dls load, shared by every
-  // bg-sound element for the lifetime of the page. The ABI has no session
-  // handle (msgs_load_smf/msgs_render/etc. all operate on one global piece
-  // of module state), so only one bg-sound element is ever meant to be
+  // bg-sound element for the lifetime of the page. Every element drives the
+  // same engine instance, so only one bg-sound element is ever meant to be
   // actively driving it -- which matches how index.html always removes the
   // previous element before appending a new one.
   // ---------------------------------------------------------------------
   let synthPromise = null;
+
+  // Points synth.e at an instance with room for an SMF of smfLen bytes. A
+  // bigger song gets a bigger instance; msgs_alloc never frees, so the old
+  // block stays behind.
+  function ensureCapacity(synth, smfLen) {
+    if (smfLen <= synth.cap) return;
+    const { exp } = synth;
+    const size = exp.msgs_size(smfLen) >>> 0;
+    const e = exp.msgs_create(exp.msgs_alloc(size), size) >>> 0;
+    if (!e) throw new Error(`msgs_create failed (${size} bytes)`);
+    const initRet = exp.msgs_init(e, synth.dlsPtr, synth.dlsLen) | 0;
+    if (initRet !== 0) throw new Error(`msgs_init failed (code ${initRet})`);
+    synth.e = e;
+    synth.cap = smfLen;
+  }
 
   function loadSynth() {
     if (synthPromise) return synthPromise;
@@ -112,8 +127,8 @@
       }
 
       const abiVersion = exp.msgs_abi_version() >>> 0;
-      if (abiVersion !== 1) {
-        throw new Error(`msgs.wasm reports ABI version ${abiVersion}, expected 1`);
+      if (abiVersion !== 2) {
+        throw new Error(`msgs.wasm reports ABI version ${abiVersion}, expected 2`);
       }
 
       // The one thing this file cannot infer: which RESAMPLE_FACTOR (voice.h)
@@ -152,10 +167,6 @@
       // memory.grow() detaches any prior ArrayBuffer view.
       const dlsPtr = exp.msgs_alloc(dlsBytes.length);
       new Uint8Array(exp.memory.buffer, dlsPtr, dlsBytes.length).set(dlsBytes);
-      const initRet = exp.msgs_init(dlsPtr, dlsBytes.length) | 0;
-      if (initRet !== 0) {
-        throw new Error(`msgs_init failed (code ${initRet}); is ${DLS_URL} a valid gm.dls?`);
-      }
 
       // One reusable output scratch buffer for every render() call, for
       // every song, for the rest of the page's life. Allocated once here
@@ -163,7 +174,14 @@
       // memory again for ordinary playback -- see NOTE(alloc) in _pump.
       const outPtr = exp.msgs_alloc(RENDER_CHUNK_FRAMES * 4); // stereo int16 = 4 bytes/frame
 
-      return { exp, outPtr, dlsLoadMs, dlsBytes: dlsBytes.length };
+      const synth = { exp, outPtr, dlsLoadMs, dlsBytes: dlsBytes.length,
+                      dlsPtr, dlsLen: dlsBytes.length, e: 0, cap: -1 };
+      try {
+        ensureCapacity(synth, 0);
+      } catch (err) {
+        throw new Error(`${err.message}; is ${DLS_URL} a valid gm.dls?`);
+      }
+      return synth;
     })();
     return synthPromise;
   }
@@ -253,18 +271,19 @@
     }
 
     _loadSong(smfBytes) {
-      const { exp } = this._synth;
-      exp.msgs_reset();
+      ensureCapacity(this._synth, smfBytes.length);
+      const { exp, e } = this._synth;
+      exp.msgs_reset(e);
       const ptr = exp.msgs_alloc(smfBytes.length);
       new Uint8Array(exp.memory.buffer, ptr, smfBytes.length).set(smfBytes);
-      const ret = exp.msgs_load_smf(ptr, smfBytes.length) | 0;
+      const ret = exp.msgs_load_smf(e, ptr, smfBytes.length) | 0;
       if (ret !== 0) throw new Error(`msgs_load_smf failed (code ${ret}) for ${this.src}`);
       // NOTE(loop): msgs_set_loop's own -1/0 semantics are a separate,
       // wasm-internal concept from this element's loop attribute. Looping
       // here is driven entirely at the JS level (see _shouldLoopAgain),
       // exactly like the original bg-sound's _onEnded/_initPlayer, so every
       // song is loaded as "play once" from the wasm's point of view.
-      exp.msgs_set_loop(0);
+      exp.msgs_set_loop(e, 0);
     }
 
     _shouldLoopAgain() {
@@ -277,7 +296,7 @@
       const ctx = this._ctx;
       const synth = this._synth;
       if (!ctx || !synth) return;
-      const { exp, outPtr } = synth;
+      const { exp, outPtr, e } = synth;
 
       // If a throttled/backgrounded timer let us fall behind the context
       // clock, resync instead of trying to catch up all at once.
@@ -290,7 +309,7 @@
         // memory forever on an infinite loop (loop="-1" is exactly what
         // index.html always sets). Looping a song reuses the same buffer
         // and calls msgs_reset() rather than reallocating/reloading.
-        const n = exp.msgs_render(outPtr, RENDER_CHUNK_FRAMES) >>> 0;
+        const n = exp.msgs_render(e, outPtr, RENDER_CHUNK_FRAMES) >>> 0;
         if (n > 0) {
           const pcm = new Int16Array(exp.memory.buffer, outPtr, n * 2);
           const buf = ctx.createBuffer(2, n, SYNTH_RATE);
@@ -312,10 +331,10 @@
           this._nextStartTime += n / SYNTH_RATE;
         }
 
-        if (n === 0 || exp.msgs_is_finished()) {
+        if (n === 0 || exp.msgs_is_finished(e)) {
           this.playCount += 1;
           if (this._shouldLoopAgain()) {
-            exp.msgs_reset(); // rewind the already-loaded song, no realloc
+            exp.msgs_reset(e); // rewind the already-loaded song, no realloc
           } else {
             clearInterval(this._timer);
             this._timer = null;
